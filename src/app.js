@@ -1,10 +1,9 @@
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { google } from 'googleapis';
-import { authenticate, clearUserSessionCookie, createPairingCode, createSession, csrf, digest, hashPassword, parseCookies, randomToken, requireAdult, requireUser, setSessionCookie, USER_COOKIE, verifyPassword } from './auth.js';
+import { authenticate, clearUserSessionCookie, createPairingCode, createSession, csrf, digest, hashPassword, parseCookies, requireAdult, requireUser, setSessionCookie, USER_COOKIE, verifyPassword } from './auth.js';
 import { budgetSummary, chorePeriod, isChoreDue, localDate, monthKey } from './domain.js';
-import { classifyGoogleError, decryptTokens, encryptTokens, googleOAuthConfig, oauthClient } from './google.js';
+import { fetchFeedEvents, validateFeedUrl } from './ical.js';
 
 const publicDir = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'public');
 const clients = new Map();
@@ -16,15 +15,8 @@ function emit(householdId, event = 'update') {
 }
 function asyncRoute(fn) { return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next); }
 
-function validGoogleRedirectUri(value) {
-  try {
-    const url = new URL(value);
-    return url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname));
-  } catch { return false; }
-}
-
 /** Build the Express application around an opened database. */
-export function createApp(db) {
+export function createApp(db, dependencies = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '64kb' }));
@@ -188,61 +180,41 @@ export function createApp(db) {
   });
   app.delete('/api/reminders/:id', requireUser, (req, res) => { db.prepare('DELETE FROM local_reminders WHERE id=? AND household_id=?').run(req.params.id, req.auth.household_id); emit(req.auth.household_id, 'calendar'); res.status(204).end(); });
 
-  app.get('/api/google/config', requireAdult, (req, res) => {
-    const saved = db.prepare('SELECT google_client_id,google_redirect_uri FROM deployment_settings WHERE id=1').get();
-    const config = saved ? { clientId: saved.google_client_id, redirectUri: saved.google_redirect_uri, source: 'database' }
-      : process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_REDIRECT_URI
-        ? { clientId: process.env.GOOGLE_CLIENT_ID, redirectUri: process.env.GOOGLE_REDIRECT_URI, source: 'environment' } : null;
-    res.json(config ? { configured: true, clientId: config.clientId, redirectUri: config.redirectUri, source: config.source, clientSecretConfigured: true } : { configured: false, clientSecretConfigured: false });
+  app.get('/api/calendar/feeds', requireAdult, (req, res) => res.json(db.prepare('SELECT id,name,color,enabled,created_at,updated_at,1 configured FROM calendar_feeds WHERE household_id=? ORDER BY name').all(req.auth.household_id)));
+  app.post('/api/calendar/feeds', requireAdult, (req, res) => {
+    const name = text(req.body.name, 80), color = text(req.body.color, 7), validation = validateFeedUrl(req.body.url);
+    if (!name) return res.status(400).json({ error: 'Calendar name is required and must be 80 characters or fewer.' });
+    if (!/^#[0-9a-f]{6}$/i.test(color || '')) return res.status(400).json({ error: 'Calendar color must be a six-digit hex color.' });
+    if (!validation.valid) return res.status(400).json({ error: validation.error });
+    const result = db.prepare('INSERT INTO calendar_feeds(household_id,name,url,color) VALUES (?,?,?,?)').run(req.auth.household_id, name, validation.url, color);
+    emit(req.auth.household_id, 'calendar'); res.status(201).json({ id: Number(result.lastInsertRowid), name, color, enabled: 1, configured: 1 });
   });
-  app.put('/api/google/config', requireAdult, (req, res) => {
-    const clientId = text(req.body.clientId, 2048), redirectUri = text(req.body.redirectUri, 2048);
-    const clientSecret = typeof req.body.clientSecret === 'string' && req.body.clientSecret.trim() && req.body.clientSecret.length <= 4096 ? req.body.clientSecret : null;
-    if (!clientId) return res.status(400).json({ error: 'Google client ID is required and must be 2048 characters or fewer.' });
-    if (!clientSecret) return res.status(400).json({ error: 'Google client secret is required and must be 4096 characters or fewer.' });
-    if (!redirectUri || !validGoogleRedirectUri(redirectUri)) return res.status(400).json({ error: 'Redirect URI must use HTTPS, or HTTP on localhost.' });
-    db.prepare(`INSERT INTO deployment_settings(id,google_client_id,encrypted_google_client_secret,google_redirect_uri) VALUES (1,?,?,?)
-      ON CONFLICT(id) DO UPDATE SET google_client_id=excluded.google_client_id,encrypted_google_client_secret=excluded.encrypted_google_client_secret,google_redirect_uri=excluded.google_redirect_uri,updated_at=CURRENT_TIMESTAMP`)
-      .run(clientId, encryptTokens({ clientSecret }), redirectUri);
-    res.json({ configured: true, clientId, redirectUri, source: 'database', clientSecretConfigured: true });
+  app.patch('/api/calendar/feeds/:id', requireAdult, (req, res) => {
+    const result = db.prepare('UPDATE calendar_feeds SET enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND household_id=?').run(+!!req.body.enabled, req.params.id, req.auth.household_id);
+    if (!result.changes) return res.status(404).json({ error: 'Calendar feed not found.' });
+    emit(req.auth.household_id, 'calendar'); res.json({ ok: true });
   });
-  app.get('/api/google/connect', requireAdult, (req, res) => {
-    const config = googleOAuthConfig(db);
-    if (!config) return res.status(409).json({ error: 'Google OAuth is not configured. Add Google client credentials in Settings.', code: 'GOOGLE_OAUTH_UNCONFIGURED' });
-    const state = randomToken();
-    db.prepare('UPDATE sessions SET device_name=? WHERE id=?').run(`oauth:${digest(state)}`, req.auth.id);
-    res.json({ url: oauthClient(config).generateAuthUrl({ access_type: 'offline', prompt: 'consent', scope: ['https://www.googleapis.com/auth/calendar.readonly', 'openid', 'email'], state }) });
+  app.delete('/api/calendar/feeds/:id', requireAdult, (req, res) => {
+    const result = db.prepare('DELETE FROM calendar_feeds WHERE id=? AND household_id=?').run(req.params.id, req.auth.household_id);
+    if (!result.changes) return res.status(404).json({ error: 'Calendar feed not found.' });
+    emit(req.auth.household_id, 'calendar'); res.status(204).end();
   });
-  app.get('/api/google/callback', requireAdult, asyncRoute(async (req, res) => {
-    if (!req.query.state || req.auth.device_name !== `oauth:${digest(req.query.state)}`) return res.status(400).send('OAuth state is invalid.');
-    const client = oauthClient(googleOAuthConfig(db)), { tokens } = await client.getToken(req.query.code); client.setCredentials(tokens);
-    const info = await google.oauth2({ version: 'v2', auth: client }).userinfo.get();
-    const result = db.prepare('INSERT INTO google_accounts(household_id,label,email,encrypted_tokens) VALUES (?,?,?,?)').run(req.auth.household_id, info.data.email || 'Google', info.data.email, encryptTokens(tokens));
-    const list = await google.calendar({ version: 'v3', auth: client }).calendarList.list();
-    const insert = db.prepare('INSERT INTO google_calendars(account_id,google_id,name,color,selected) VALUES (?,?,?,?,?)');
-    for (const c of list.data.items || []) insert.run(result.lastInsertRowid, c.id, c.summary, c.backgroundColor, c.primary ? 1 : 0);
-    emit(req.auth.household_id, 'calendar');
-    res.redirect('/#settings');
-  }));
-  app.get('/api/google/calendars', requireAdult, (req, res) => res.json(db.prepare(`SELECT c.id,c.name,c.color,c.selected,a.label,a.status,a.last_error FROM google_calendars c JOIN google_accounts a ON a.id=c.account_id WHERE a.household_id=?`).all(req.auth.household_id)));
-  app.patch('/api/google/calendars/:id', requireAdult, (req, res) => { db.prepare('UPDATE google_calendars SET selected=? WHERE id=? AND account_id IN (SELECT id FROM google_accounts WHERE household_id=?)').run(+!!req.body.selected, req.params.id, req.auth.household_id); emit(req.auth.household_id, 'calendar'); res.json({ ok: true }); });
   app.get('/api/calendar/events', asyncRoute(async (req, res) => {
     const timeMin = text(req.query.from, 40), timeMax = text(req.query.to, 40);
     if (!timeMin || !timeMax || Number.isNaN(Date.parse(timeMin)) || Number.isNaN(Date.parse(timeMax))) return res.status(400).json({ error: 'Valid from and to times are required.' });
-    const calendars = db.prepare(`SELECT c.*,a.encrypted_tokens,a.id account_id FROM google_calendars c JOIN google_accounts a ON a.id=c.account_id WHERE a.household_id=? AND c.selected=1`).all(req.auth.household_id);
-    const events = [], errors = [];
-    const config = calendars.length ? googleOAuthConfig(db) : null;
-    if (calendars.length && !config) return res.json({ events, errors: [{ message: 'Google OAuth is not configured. Ask an adult to add Google client credentials in Settings.' }] });
-    for (const calendar of calendars) {
+    const from = new Date(timeMin), to = new Date(timeMax);
+    if (from >= to || to - from > 62 * 86400000) return res.status(400).json({ error: 'Calendar range must be positive and no longer than 62 days.' });
+    const feeds = db.prepare('SELECT id,name,url,color FROM calendar_feeds WHERE household_id=? AND enabled=1').all(req.auth.household_id);
+    const events = db.prepare('SELECT id,title,starts_at FROM local_reminders WHERE household_id=? AND starts_at>=? AND starts_at<? ORDER BY starts_at').all(req.auth.household_id, timeMin, timeMax).map((event) => ({ id: `local:${event.id}`, title: event.title, start: { dateTime: event.starts_at }, end: null, color: null, calendar: 'Family Hub', source: 'local reminder' }));
+    const errors = [];
+    for (const feed of feeds) {
       try {
-        const client = oauthClient(config); client.setCredentials(decryptTokens(calendar.encrypted_tokens));
-        client.on('tokens', (tokens) => { const current = decryptTokens(calendar.encrypted_tokens); db.prepare('UPDATE google_accounts SET encrypted_tokens=?,status=?,last_error=NULL WHERE id=?').run(encryptTokens({ ...current, ...tokens }), 'active', calendar.account_id); });
-        const response = await google.calendar({ version: 'v3', auth: client }).events.list({ calendarId: calendar.google_id, timeMin, timeMax, singleEvents: true, orderBy: 'startTime', timeZone: db.prepare('SELECT timezone FROM households WHERE id=?').get(req.auth.household_id).timezone });
-        events.push(...(response.data.items || []).map((e) => ({ id: `${calendar.id}:${e.id}`, title: e.summary || '(Untitled)', start: e.start, end: e.end, color: calendar.color, calendar: calendar.name, source: 'google' })));
+        events.push(...await (dependencies.fetchFeedEvents || fetchFeedEvents)(feed, from, to));
       } catch (error) {
-        const state = classifyGoogleError(error); db.prepare('UPDATE google_accounts SET status=?,last_error=? WHERE id=?').run(state.status, state.message, calendar.account_id); errors.push({ calendar: calendar.name, message: state.message });
+        errors.push({ feedId: feed.id, calendar: feed.name, message: `Could not load ${feed.name}: ${error.message}` });
       }
     }
+    events.sort((a, b) => (a.start.dateTime || a.start.date).localeCompare(b.start.dateTime || b.start.date));
     res.json({ events, errors });
   }));
 

@@ -1,19 +1,18 @@
 # Family Hub
 
-A private household calendar and task PWA. It runs as one Node.js service with SQLite. Google Calendar events remain in Google and are fetched read-only when a month is opened.
+A private household calendar and task PWA. It runs as one Node.js service with SQLite. Calendar events are fetched read-only from iCal feeds when a month is opened.
 
 ## Local setup
 
 Requirements: Node.js 22+, npm, and build tools supported by `better-sqlite3` if a prebuilt binary is unavailable.
 
 1. Run `cp .env.example .env`.
-2. Generate the token key with `openssl rand -base64 32` and put it in `TOKEN_ENCRYPTION_KEY`.
-3. Run `npm install`.
-4. Create each adult account separately. Run `npm run bootstrap -- --email adult@example.com --name "Adult Name"`, enter a password of at least 12 characters, then repeat for the second adult. For initial local provisioning only, add `--allow-temporary-password` to accept an explicitly temporary password of at least 8 characters, such as `password`. Change it in Settings immediately after sign-in.
-5. Run `npm start`.
-6. Open `http://localhost:3000`.
+2. Run `npm install`.
+3. Create each adult account separately. Run `npm run bootstrap -- --email adult@example.com --name "Adult Name"`, enter a password of at least 12 characters, then repeat for the second adult. For initial local provisioning only, add `--allow-temporary-password` to accept an explicitly temporary password of at least 8 characters, such as `password`. Change it in Settings immediately after sign-in.
+4. Run `npm start`.
+5. Open `http://localhost:3000`.
 
-No sample household records are created. Add children, routines, chores, budgets, plans, reminders, and Google accounts after sign-in. Create the first two adults with the local bootstrap command. Adults can add more household members in Settings.
+No sample household records are created. Add children, routines, chores, budgets, plans, reminders, and calendar feeds after sign-in. Create the first two adults with the local bootstrap command. Adults can add more household members in Settings.
 
 Run checks with:
 
@@ -31,31 +30,22 @@ npm test
 
 Deployment automation can create a 10-minute code for the deployment's household with `npm run pairing-code`. The command prints only the code. In Docker, run `docker compose exec family-hub npm run --silent pairing-code` to suppress npm's command banner.
 
-The wall display gets a separate opaque device session. It can read the dashboard and calendar, and toggle today's routines and chores. It cannot change groceries, reminders, trips, members, budgets, plans, or account settings. It never receives a personal Google session or Google token.
+The wall display gets a separate opaque device session. It can read the dashboard and calendar, and toggle today's routines and chores. It cannot change groceries, reminders, trips, members, budgets, plans, calendar feeds, or account settings. It never receives calendar feed URLs.
 
-## Google Cloud setup
+## Calendar feeds
 
-1. Open Google Cloud Console and create or select a project.
-2. Enable **Google Calendar API**.
-3. Configure the OAuth consent screen. Choose **Internal** for Google Workspace, or **External** and add each adult Google account as a test user while the app is in testing.
-4. Add only these scopes: `openid`, `email`, and `https://www.googleapis.com/auth/calendar.readonly`.
-5. Create an **OAuth client ID** with application type **Web application**.
-6. Add `http://localhost:3000/api/google/callback` as an authorized redirect URI for local use.
-7. Sign in as an adult, open **Settings**, and select **Connect Google account**. Enter the client ID, client secret, and exact redirect URI when prompted. The secret is encrypted with `TOKEN_ENCRYPTION_KEY` and is never displayed after save.
-8. Save the credentials, complete Google authorization, and select visible calendars.
+Adults add read-only iCal feeds in **Settings** with a calendar name, iCal URL, and color. For Google Calendar, open the calendar's **Settings and sharing** page, then copy either **Public address in iCal format** for a public calendar or **Secret address in iCal format** for a private calendar. To revoke a secret address, reset it in Google Calendar and delete or replace the feed in Family Hub.
 
-For a deployed domain, add `https://family.example.com/api/google/callback` to the same OAuth client and enter that exact value in Settings. Set `APP_ORIGIN=https://family.example.com`. Google permits HTTP redirect URIs only for localhost; other redirect URIs must use HTTPS. OAuth may require Google verification if used outside an organization or test-user list.
-
-`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` remain optional `.env` fallback values. Credentials saved in Settings take precedence.
+Treat an iCal URL as a bearer secret: anyone with the URL can read that calendar. The URL is hidden after save, but is stored as plain text in SQLite. Keep the database and backups private. Feed events are fetched when requested and are not copied into the local database.
 
 ## Docker deployment
 
-1. Create `.env` from `.env.example`. Use the public HTTPS URL for `APP_ORIGIN`. Google OAuth environment values are optional fallback settings.
+1. Create `.env` from `.env.example`. Use the public HTTPS URL for `APP_ORIGIN`.
    Set `ALLOWED_ORIGINS` to the comma-separated browser origins allowed to submit changes. Include each temporary LAN URL used before HTTPS is configured.
 2. Run `docker compose up -d --build`.
 3. Create adults inside the running service: `docker compose exec family-hub npm run bootstrap -- --email adult@example.com --name "Adult Name"`. Repeat for the second adult.
 4. Port 3000 listens on the host network for private-LAN administration. Put an HTTPS reverse proxy in front of it for phone PWA installation or access across networks. Do not forward port 3000 directly to the internet.
-5. Back up the Docker volume. SQLite data and encrypted Google tokens are stored there. Back up `TOKEN_ENCRYPTION_KEY` separately. Losing this key requires reconnecting Google accounts.
+5. Back up the Docker volume. SQLite data and calendar feed URLs are stored there. Keep the database and backups private.
 
 The service applies numbered migrations at startup. Stop the service or use SQLite's online backup API when making a manual database backup.
 
@@ -86,7 +76,7 @@ Raspberry Pi OS does not guarantee an on-screen keyboard in Chromium kiosk mode.
 
 ## HTTPS and phone installation
 
-Terminate HTTPS at a reverse proxy such as Caddy on the homelab. Use a private DNS name with a certificate trusted by both phones, or use a secure private-network product that supplies a trusted HTTPS name. Do not forward the app directly to the public internet. Set `APP_ORIGIN` and `GOOGLE_REDIRECT_URI` to the exact HTTPS origin, then add that redirect URI in Google Cloud.
+Terminate HTTPS at a reverse proxy such as Caddy on the homelab. Use a private DNS name with a certificate trusted by both phones, or use a secure private-network product that supplies a trusted HTTPS name. Do not forward the app directly to the public internet. Set `APP_ORIGIN` to the exact HTTPS origin.
 
 Open the HTTPS URL on each phone and use the browser's **Add to Home Screen** or **Install app** command. PWA installation and service workers require HTTPS except on `localhost`.
 
@@ -98,8 +88,7 @@ Preview captures are in `artifacts/wall.png` and `artifacts/phone.png`. They use
 
 ## First-version limits
 
-- Google Calendar is read-only. Google remains the source of truth.
-- Real Google OAuth cannot be verified until client credentials and an approved redirect URI are configured.
+- Calendar feeds are read-only. The calendar provider remains the source of truth.
 - Grocery spending is manual. There is no bank or retailer integration.
 - The app supports one household per deployment.
 - CI is configured; automatic deployment waits for a named Git host and deployment target.
@@ -110,5 +99,5 @@ Preview captures are in `artifacts/wall.png` and `artifacts/phone.png`. They use
 - Session and pairing tokens are stored as SHA-256 digests. Session cookies are HttpOnly, SameSite=Strict, and Secure when `APP_ORIGIN` uses HTTPS.
 - State-changing API calls require the configured same origin and a CSRF request header.
 - Every household record query is scoped to the authenticated household.
-- Google tokens and the saved OAuth client secret use AES-256-GCM encryption with `TOKEN_ENCRYPTION_KEY`.
+- Calendar feed URLs are bearer secrets stored in SQLite. Normal APIs and the frontend never return them after save.
 - This first version assumes one household per deployment. Do not expose it without HTTPS, backups, and normal host security updates.

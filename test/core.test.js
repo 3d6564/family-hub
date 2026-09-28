@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDatabase } from '../src/db.js';
 import { budgetSummary, chorePeriod, isChoreDue, monthKey } from '../src/domain.js';
-import { classifyGoogleError, decryptTokens, encryptTokens, googleOAuthConfig } from '../src/google.js';
+import { assertSafeRemoteUrl, parseFeedEvents, validateFeedUrl } from '../src/ical.js';
 import { createApp } from '../src/app.js';
 import { createPairingCode, createSession, digest, hashPassword, verifyPassword } from '../src/auth.js';
 
@@ -38,59 +38,64 @@ test('chores become due only on their scheduled local days', () => {
   assert.equal(on('weekly', '2026-09-29', '2026-10-06'), true);
 });
 
-test('Google tokens encrypt at rest and errors expose useful states', () => {
-  const key = Buffer.alloc(32, 7).toString('base64'), tokens = { access_token: 'private', refresh_token: 'refresh' };
-  const encrypted = encryptTokens(tokens, key); assert.equal(encrypted.includes('private'), false); assert.deepEqual(decryptTokens(encrypted, key), tokens);
-  assert.equal(classifyGoogleError({ response: { status: 401 } }).status, 'revoked');
-  assert.equal(classifyGoogleError({ response: { status: 403 } }).status, 'unavailable');
-  assert.match(classifyGoogleError(new Error('network')).message, /temporarily/);
-});
-
-test('Google OAuth config is adult-only, validated, encrypted, and preferred over environment fallback', async (t) => {
-  const previous = {
-    APP_ORIGIN: process.env.APP_ORIGIN,
-    TOKEN_ENCRYPTION_KEY: process.env.TOKEN_ENCRYPTION_KEY,
-    GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
-    GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
-    GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI
-  };
-  Object.assign(process.env, {
-    APP_ORIGIN: 'http://127.0.0.1',
-    TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString('base64'),
-    GOOGLE_CLIENT_ID: 'environment-id',
-    GOOGLE_CLIENT_SECRET: 'environment-secret',
-    GOOGLE_REDIRECT_URI: 'https://environment.example.test/api/google/callback'
-  });
-  t.after(() => {
-    for (const [key, value] of Object.entries(previous)) value === undefined ? delete process.env[key] : process.env[key] = value;
-  });
-
+test('calendar feed CRUD is adult-only, household-scoped, and never returns URLs', async (t) => {
+  const previous = process.env.APP_ORIGIN; process.env.APP_ORIGIN = 'http://127.0.0.1';
+  t.after(() => previous === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previous);
   const db = database(), home = household(db, 'Home'), password = await hashPassword('a secure password');
-  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'adult-config@example.test', 'Adult', password).lastInsertRowid);
-  const child = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'child')").run(home, 'child-config@example.test', 'Child', password).lastInsertRowid);
+  const otherHome = household(db, 'Other');
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'adult-feed@example.test', 'Adult', password).lastInsertRowid);
+  const child = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'child')").run(home, 'child-feed@example.test', 'Child', password).lastInsertRowid);
   const adultToken = createSession(db, { householdId: home, userId: adult }), childToken = createSession(db, { householdId: home, userId: child });
   const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); });
   await new Promise((resolve) => server.once('listening', resolve));
-  const base = `http://127.0.0.1:${server.address().port}`, route = `${base}/api/google/config`;
+  const base = `http://127.0.0.1:${server.address().port}`, route = `${base}/api/calendar/feeds`;
   const headers = { cookie: `family_user_session=${adultToken}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' };
-
   assert.equal((await fetch(route)).status, 401);
   assert.equal((await fetch(route, { headers: { cookie: `family_user_session=${childToken}` } })).status, 403);
-  assert.equal((await fetch(route, { method: 'PUT', headers: { ...headers, 'x-csrf-token': undefined }, body: '{}' })).status, 403);
-  let response = await fetch(route, { method: 'PUT', headers, body: JSON.stringify({ clientId: 'id', clientSecret: 'secret', redirectUri: 'http://example.test/callback' }) });
-  assert.equal(response.status, 400);
-  response = await fetch(route, { method: 'PUT', headers, body: JSON.stringify({ clientId: 'database-id', clientSecret: 'database-secret', redirectUri: 'https://calendar.example.test/api/google/callback' }) });
-  assert.equal(response.status, 200);
+  let response = await fetch(route, { method: 'POST', headers, body: JSON.stringify({ name: 'Family', url: 'https://calendar.example.test/private.ics', color: '#4285f4' }) });
+  assert.equal(response.status, 201); const created = await response.json(); assert.equal(JSON.stringify(created).includes('private.ics'), false);
+  db.prepare("INSERT INTO calendar_feeds(household_id,name,url,color) VALUES (?,?,?,?)").run(otherHome, 'Other private', 'https://other.example/secret.ics', '#ffffff');
+  const list = await (await fetch(route, { headers })).json();
+  assert.equal(list.length, 1); assert.equal(list[0].configured, 1); assert.equal(JSON.stringify(list).includes('private.ics'), false); assert.equal(JSON.stringify(list).includes('secret.ics'), false);
+  assert.equal((await fetch(`${route}/${created.id}`, { method: 'PATCH', headers, body: JSON.stringify({ enabled: false }) })).status, 200);
+  assert.equal((await fetch(`${route}/${created.id}`, { method: 'DELETE', headers })).status, 204);
+});
 
-  const stored = db.prepare('SELECT * FROM deployment_settings WHERE id=1').get();
-  assert.equal(stored.encrypted_google_client_secret.includes('database-secret'), false);
-  assert.equal(decryptTokens(stored.encrypted_google_client_secret).clientSecret, 'database-secret');
-  const status = await (await fetch(route, { headers: { cookie: `family_user_session=${adultToken}` } })).json();
-  assert.deepEqual(status, { configured: true, clientId: 'database-id', redirectUri: 'https://calendar.example.test/api/google/callback', source: 'database', clientSecretConfigured: true });
-  assert.equal(JSON.stringify(status).includes('database-secret'), false);
-  assert.equal(googleOAuthConfig(db).clientId, 'database-id');
-  db.prepare('DELETE FROM deployment_settings').run();
-  assert.equal(googleOAuthConfig(db).clientId, 'environment-id');
+test('calendar feed URL validation and production address checks block unsafe targets', async () => {
+  assert.equal(validateFeedUrl('https://calendar.example/feed.ics').valid, true);
+  assert.equal(validateFeedUrl('http://192.168.1.20/feed.ics').valid, true);
+  assert.equal(validateFeedUrl('http://calendar.example/feed.ics').valid, false);
+  assert.equal(validateFeedUrl('https://user:pass@calendar.example/feed.ics').valid, false);
+  assert.equal(validateFeedUrl(`https://example.test/${'x'.repeat(4096)}`).valid, false);
+  await assert.rejects(assertSafeRemoteUrl('https://calendar.example/feed.ics', async () => [{ address: '127.0.0.1' }]), /not allowed/);
+  await assert.doesNotReject(assertSafeRemoteUrl('https://calendar.example/feed.ics', async () => [{ address: '203.0.113.10' }]));
+});
+
+test('iCal parsing expands recurring events and preserves all-day dates', () => {
+  const source = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:daily\r\nDTSTART:20260901T090000Z\r\nDTEND:20260901T100000Z\r\nRRULE:FREQ=DAILY;COUNT=3\r\nSUMMARY:Standup\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:day\r\nDTSTART;VALUE=DATE:20260902\r\nDTEND;VALUE=DATE:20260903\r\nSUMMARY:Day off\r\nEND:VEVENT\r\nEND:VCALENDAR`;
+  const events = parseFeedEvents(source, { id: 1, name: 'Work', color: '#123456' }, new Date('2026-09-01T00:00:00Z'), new Date('2026-09-05T00:00:00Z'));
+  assert.equal(events.filter((event) => event.title === 'Standup').length, 3);
+  assert.deepEqual(events.find((event) => event.title === 'Day off').start, { date: '2026-09-02' });
+});
+
+test('one feed failure does not hide local reminders or other feed events', async (t) => {
+  const previous = process.env.APP_ORIGIN; process.env.APP_ORIGIN = 'http://127.0.0.1';
+  t.after(() => previous === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previous);
+  const db = database(), home = household(db, 'Home'), password = await hashPassword('a secure password');
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'events@example.test', 'Adult', password).lastInsertRowid);
+  db.prepare("INSERT INTO calendar_feeds(household_id,name,url,color) VALUES (?,?,?,?)").run(home, 'Broken', 'https://broken.example/feed.ics', '#111111');
+  db.prepare("INSERT INTO calendar_feeds(household_id,name,url,color) VALUES (?,?,?,?)").run(home, 'Working', 'https://working.example/feed.ics', '#222222');
+  db.prepare('INSERT INTO local_reminders(household_id,title,starts_at,created_by) VALUES (?,?,?,?)').run(home, 'Local', '2026-09-10T12:00:00.000Z', adult);
+  const feedFetcher = async (feed) => {
+    if (feed.name === 'Broken') throw new Error('invalid calendar data');
+    return [{ id: 'feed:event', title: 'Remote', start: { date: '2026-09-11' }, end: { date: '2026-09-12' }, color: feed.color, calendar: feed.name, source: 'ical' }];
+  };
+  const token = createSession(db, { householdId: home, userId: adult }), server = createApp(db, { fetchFeedEvents: feedFetcher }).listen(0);
+  t.after(() => { server.close(); db.close(); }); await new Promise((resolve) => server.once('listening', resolve));
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/calendar/events?from=2026-09-01T00:00:00.000Z&to=2026-10-01T00:00:00.000Z`, { headers: { cookie: `family_user_session=${token}` } });
+  const body = await response.json();
+  assert.deepEqual(body.events.map((event) => event.title), ['Local', 'Remote']);
+  assert.deepEqual(body.errors, [{ feedId: 1, calendar: 'Broken', message: 'Could not load Broken: invalid calendar data' }]);
 });
 
 test('household APIs do not allow cross-household item changes', async (t) => {
