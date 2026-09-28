@@ -1,4 +1,5 @@
 import express from 'express';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { authenticate, clearUserSessionCookie, createPairingCode, createSession, csrf, digest, hashPassword, parseCookies, requireAdult, requireUser, setSessionCookie, USER_COOKIE, verifyPassword } from './auth.js';
@@ -18,6 +19,7 @@ function asyncRoute(fn) { return (req, res, next) => Promise.resolve(fn(req, res
 /** Build the Express application around an opened database. */
 export function createApp(db, dependencies = {}) {
   const app = express();
+  const deploymentVersion = crypto.randomUUID();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '64kb' }));
   app.use('/api', (req, res, next) => {
@@ -49,6 +51,7 @@ export function createApp(db, dependencies = {}) {
     const household = db.prepare('SELECT id,name,timezone FROM households WHERE id=?').get(req.auth.household_id);
     res.json({ household, user: req.auth.user_id ? { id: req.auth.user_id, name: req.auth.name, email: req.auth.email, role: req.auth.role } : null, device: req.auth.kind === 'device' ? req.auth.device_name : null });
   });
+  app.get('/api/version', (req, res) => res.json({ version: deploymentVersion }));
   app.post('/api/logout', (req, res) => {
     const token = parseCookies(req.headers.cookie)[USER_COOKIE];
     if (token) db.prepare('DELETE FROM sessions WHERE token_hash=?').run(digest(token));
