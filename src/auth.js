@@ -77,8 +77,8 @@ export function requireUser(req, res, next) {
 export function csrf(req, res, next) {
   if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
     const origin = req.get('origin');
-    const expected = process.env.APP_ORIGIN || `${req.protocol}://${req.get('host')}`;
-    if (!origin || origin !== expected || req.get('x-csrf-token') !== '1') return res.status(403).json({ error: 'Request verification failed.' });
+    const allowed = (process.env.ALLOWED_ORIGINS || process.env.APP_ORIGIN || `${req.protocol}://${req.get('host')}`).split(',').map((value) => value.trim());
+    if (!origin || !allowed.includes(origin) || req.get('x-csrf-token') !== '1') return res.status(403).json({ error: 'Request verification failed.' });
   }
   next();
 }

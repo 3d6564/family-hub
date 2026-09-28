@@ -49,6 +49,7 @@ For a deployed domain, add `https://family.example.com/api/google/callback` to t
 ## Docker deployment
 
 1. Create `.env` from `.env.example`. Use the public HTTPS URL for `APP_ORIGIN` and `GOOGLE_REDIRECT_URI`.
+   Set `ALLOWED_ORIGINS` to the comma-separated browser origins allowed to submit changes. Include each temporary LAN URL used before HTTPS is configured.
 2. Run `docker compose up -d --build`.
 3. Create adults inside the running service: `docker compose exec family-hub npm run bootstrap -- --email adult@example.com --name "Adult Name"`. Repeat for the second adult.
 4. Port 3000 listens on the host network for private-LAN administration. Put an HTTPS reverse proxy in front of it for phone PWA installation or access across networks. Do not forward port 3000 directly to the internet.
