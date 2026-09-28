@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#1d5138">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/styles.css">
+  <title>Family Hub</title>
+</head>
+<body>
+  <main id="auth" class="auth-shell" hidden>
+    <section class="auth-card">
+      <p class="eyebrow">PRIVATE HOUSEHOLD</p><h1>Family Hub</h1><p class="muted">Sign in as an adult, or pair this screen as a wall display.</p>
+      <div class="tabs" role="tablist"><button class="tab active" data-auth-tab="login">Adult sign in</button><button class="tab" data-auth-tab="pair">Pair display</button></div>
+      <form id="login-form"><label>Email<input name="email" type="email" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button class="primary">Sign in</button></form>
+      <form id="pair-form" hidden><label>Pairing code<input name="code" inputmode="text" autocomplete="one-time-code" required></label><label>Display name<input name="name" value="Kitchen wall" required></label><button class="primary">Pair screen</button></form>
+      <p id="auth-error" class="error" role="alert"></p>
+    </section>
+  </main>
+  <div id="app" hidden>
+    <header><div><span id="home-name">HOME</span><i></i></div><time id="clock"></time><button id="menu-button" aria-label="Open account menu">Settings</button></header>
+    <main class="layout">
+      <section class="calendar card view" data-view="calendar">
+        <div class="section-head"><div><p class="eyebrow">FAMILY CALENDAR</p><h1 id="month-title"></h1></div><div class="month-actions"><button id="prev-month" aria-label="Previous month">‹</button><button id="today">Today</button><button id="next-month" aria-label="Next month">›</button></div></div>
+        <div id="calendar-errors" class="notice" hidden></div><div class="desktop-calendar"><div class="weekdays" aria-hidden="true"></div><div id="month-grid" class="month-grid"></div></div><div id="month-agenda" class="month-agenda"></div>
+        <form id="reminder-form" class="inline-form user-only"><label>Local reminder<input name="title" placeholder="Reminder title" required></label><label>Date and time<input name="startsAt" type="datetime-local" required></label><button>Add local</button></form>
+      </section>
+      <aside>
+        <section class="card view" data-view="routines"><div class="card-title"><h2>Today's routines</h2><span id="routine-count"></span></div><div id="routines"></div><form id="routine-form" class="stack adult-only"><select name="childId" aria-label="Child" required></select><input name="title" aria-label="Routine title" placeholder="New routine" required><input name="days" aria-label="Days, Sunday through Saturday" value="0,1,2,3,4,5,6" required><button>Add routine</button></form><details class="adult-only"><summary>Completion history</summary><div id="routine-history"></div></details></section>
+        <section class="card view" data-view="chores"><div class="card-title"><h2>Today's chores</h2><span id="chore-count"></span></div><div id="chores"></div><form id="chore-form" class="stack adult-only"><input name="title" aria-label="Chore title" placeholder="New chore" required><select name="assigneeId" aria-label="Assignee"><option value="">Anyone</option></select><select name="recurrence" aria-label="Recurrence"><option value="once">One time</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select><input name="dueOn" type="date" aria-label="Due date" required><button>Add chore</button></form><details class="adult-only"><summary>Completion history</summary><div id="chore-history"></div></details></section>
+        <section class="card view" data-view="groceries"><div class="card-title"><h2>Groceries</h2><button id="clear-groceries" class="user-only">Clear checked</button></div><div id="budget"></div><div id="groceries"></div><form id="grocery-form" class="inline-form user-only"><input name="name" aria-label="Grocery item" placeholder="Add an item" required><input name="quantity" aria-label="Quantity" placeholder="Qty"><button>Add</button></form><details class="adult-only"><summary>Budget and trips</summary><form id="budget-form" class="inline-form"><input name="amount" type="number" min="0" step="0.01" aria-label="Monthly budget" placeholder="Monthly budget"><button>Set</button></form><form id="trip-form" class="stack"><input name="store" aria-label="Store" placeholder="Store"><input name="amount" type="number" min="0" step="0.01" aria-label="Trip amount" placeholder="Amount" required><input name="occurredOn" type="date" aria-label="Trip date" required><input name="note" maxlength="500" aria-label="Trip note" placeholder="Optional note"><button>Add trip</button></form><div id="trips"></div></details></section>
+        <section class="card view" data-view="plans"><div class="card-title"><h2>Family plans</h2><button id="save-plans" class="adult-only">Save plans</button></div><div id="plans"></div><button id="add-plan" class="adult-only">Add plan</button></section>
+        <section class="card view settings" data-view="settings"><h2>Settings</h2><p id="identity"></p><div class="adult-only"><h3>Household members</h3><form id="member-form" class="stack"><input name="name" aria-label="Member name" placeholder="Name" required><input name="email" type="email" aria-label="Member email" placeholder="Email" required><input name="password" type="password" minlength="12" aria-label="Temporary password" placeholder="Password (12+ characters)" required><select name="role" aria-label="Member role"><option value="child">Child</option><option value="adult">Adult</option></select><button>Add member</button></form><h3>Google Calendar</h3><button id="connect-google">Connect Google account</button><div id="google-calendars"></div><h3>Wall displays</h3><button id="pair-code">Create pairing code</button><output id="pair-output"></output><div id="devices"></div></div><button id="logout">Sign out</button></section>
+      </aside>
+    </main>
+    <nav aria-label="Main navigation"><button data-nav="calendar" class="active"><b>▦</b>Calendar</button><button data-nav="chores"><b>✓</b>Chores</button><button data-nav="groceries"><b>≡</b>Groceries</button><button data-nav="routines"><b>○</b>Routines</button><button data-nav="plans"><b>◇</b>Plans</button></nav>
+  </div>
+  <dialog id="event-dialog" aria-labelledby="event-title"><form method="dialog"><button class="dialog-close" aria-label="Close event details">×</button></form><p class="eyebrow">EVENT DETAILS</p><h2 id="event-title"></h2><dl><dt>Source</dt><dd id="event-source"></dd><dt>Starts</dt><dd id="event-start"></dd><dt>Ends</dt><dd id="event-end"></dd></dl></dialog>
+  <div id="toast" role="status"></div><script type="module" src="/app.js"></script>
+</body>
+</html>

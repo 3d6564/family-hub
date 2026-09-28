@@ -1,0 +1,6 @@
+.git
+node_modules
+data
+.env
+test
+family-hub-reference.png

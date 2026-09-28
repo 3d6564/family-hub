@@ -1,0 +1,19 @@
+{
+  "name": "family-hub",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "bootstrap": "node src/bootstrap.js",
+    "test": "node --test --test-concurrency=1",
+    "check": "node --check src/server.js && node --check public/app.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.2.0",
+    "express": "^5.1.0",
+    "googleapis": "^160.0.0"
+  }
+}
