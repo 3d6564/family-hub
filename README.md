@@ -41,14 +41,16 @@ The wall display gets a separate opaque device session. It can read the dashboar
 4. Add only these scopes: `openid`, `email`, and `https://www.googleapis.com/auth/calendar.readonly`.
 5. Create an **OAuth client ID** with application type **Web application**.
 6. Add `http://localhost:3000/api/google/callback` as an authorized redirect URI for local use.
-7. Put the client ID and secret in `.env`. Set `GOOGLE_REDIRECT_URI` to the exact redirect URI.
-8. Restart the app. Sign in as an adult, open **Settings**, select **Connect Google account**, and select visible calendars after authorization.
+7. Sign in as an adult, open **Settings**, and select **Connect Google account**. Enter the client ID, client secret, and exact redirect URI when prompted. The secret is encrypted with `TOKEN_ENCRYPTION_KEY` and is never displayed after save.
+8. Save the credentials, complete Google authorization, and select visible calendars.
 
-For a deployed domain, add `https://family.example.com/api/google/callback` to the same OAuth client and use that exact value in `GOOGLE_REDIRECT_URI`. Set `APP_ORIGIN=https://family.example.com`. OAuth may require Google verification if used outside an organization or test-user list.
+For a deployed domain, add `https://family.example.com/api/google/callback` to the same OAuth client and enter that exact value in Settings. Set `APP_ORIGIN=https://family.example.com`. Google permits HTTP redirect URIs only for localhost; other redirect URIs must use HTTPS. OAuth may require Google verification if used outside an organization or test-user list.
+
+`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` remain optional `.env` fallback values. Credentials saved in Settings take precedence.
 
 ## Docker deployment
 
-1. Create `.env` from `.env.example`. Use the public HTTPS URL for `APP_ORIGIN` and `GOOGLE_REDIRECT_URI`.
+1. Create `.env` from `.env.example`. Use the public HTTPS URL for `APP_ORIGIN`. Google OAuth environment values are optional fallback settings.
    Set `ALLOWED_ORIGINS` to the comma-separated browser origins allowed to submit changes. Include each temporary LAN URL used before HTTPS is configured.
 2. Run `docker compose up -d --build`.
 3. Create adults inside the running service: `docker compose exec family-hub npm run bootstrap -- --email adult@example.com --name "Adult Name"`. Repeat for the second adult.
@@ -108,5 +110,5 @@ Preview captures are in `artifacts/wall.png` and `artifacts/phone.png`. They use
 - Session and pairing tokens are stored as SHA-256 digests. Session cookies are HttpOnly, SameSite=Strict, and Secure when `APP_ORIGIN` uses HTTPS.
 - State-changing API calls require the configured same origin and a CSRF request header.
 - Every household record query is scoped to the authenticated household.
-- Google tokens use AES-256-GCM encryption with `TOKEN_ENCRYPTION_KEY`.
+- Google tokens and the saved OAuth client secret use AES-256-GCM encryption with `TOKEN_ENCRYPTION_KEY`.
 - This first version assumes one household per deployment. Do not expose it without HTTPS, backups, and normal host security updates.

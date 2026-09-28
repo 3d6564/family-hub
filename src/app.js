@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { google } from 'googleapis';
 import { authenticate, clearUserSessionCookie, createPairingCode, createSession, csrf, digest, hashPassword, parseCookies, randomToken, requireAdult, requireUser, setSessionCookie, USER_COOKIE, verifyPassword } from './auth.js';
 import { budgetSummary, chorePeriod, isChoreDue, localDate, monthKey } from './domain.js';
-import { classifyGoogleError, decryptTokens, encryptTokens, oauthClient } from './google.js';
+import { classifyGoogleError, decryptTokens, encryptTokens, googleOAuthConfig, oauthClient } from './google.js';
 
 const publicDir = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'public');
 const clients = new Map();
@@ -15,6 +15,13 @@ function emit(householdId, event = 'update') {
   for (const res of clients.get(householdId) || []) res.write(`event: ${event}\ndata: {}\n\n`);
 }
 function asyncRoute(fn) { return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next); }
+
+function validGoogleRedirectUri(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname));
+  } catch { return false; }
+}
 
 /** Build the Express application around an opened database. */
 export function createApp(db) {
@@ -181,14 +188,34 @@ export function createApp(db) {
   });
   app.delete('/api/reminders/:id', requireUser, (req, res) => { db.prepare('DELETE FROM local_reminders WHERE id=? AND household_id=?').run(req.params.id, req.auth.household_id); emit(req.auth.household_id, 'calendar'); res.status(204).end(); });
 
+  app.get('/api/google/config', requireAdult, (req, res) => {
+    const saved = db.prepare('SELECT google_client_id,google_redirect_uri FROM deployment_settings WHERE id=1').get();
+    const config = saved ? { clientId: saved.google_client_id, redirectUri: saved.google_redirect_uri, source: 'database' }
+      : process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_REDIRECT_URI
+        ? { clientId: process.env.GOOGLE_CLIENT_ID, redirectUri: process.env.GOOGLE_REDIRECT_URI, source: 'environment' } : null;
+    res.json(config ? { configured: true, clientId: config.clientId, redirectUri: config.redirectUri, source: config.source, clientSecretConfigured: true } : { configured: false, clientSecretConfigured: false });
+  });
+  app.put('/api/google/config', requireAdult, (req, res) => {
+    const clientId = text(req.body.clientId, 2048), redirectUri = text(req.body.redirectUri, 2048);
+    const clientSecret = typeof req.body.clientSecret === 'string' && req.body.clientSecret.trim() && req.body.clientSecret.length <= 4096 ? req.body.clientSecret : null;
+    if (!clientId) return res.status(400).json({ error: 'Google client ID is required and must be 2048 characters or fewer.' });
+    if (!clientSecret) return res.status(400).json({ error: 'Google client secret is required and must be 4096 characters or fewer.' });
+    if (!redirectUri || !validGoogleRedirectUri(redirectUri)) return res.status(400).json({ error: 'Redirect URI must use HTTPS, or HTTP on localhost.' });
+    db.prepare(`INSERT INTO deployment_settings(id,google_client_id,encrypted_google_client_secret,google_redirect_uri) VALUES (1,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET google_client_id=excluded.google_client_id,encrypted_google_client_secret=excluded.encrypted_google_client_secret,google_redirect_uri=excluded.google_redirect_uri,updated_at=CURRENT_TIMESTAMP`)
+      .run(clientId, encryptTokens({ clientSecret }), redirectUri);
+    res.json({ configured: true, clientId, redirectUri, source: 'database', clientSecretConfigured: true });
+  });
   app.get('/api/google/connect', requireAdult, (req, res) => {
+    const config = googleOAuthConfig(db);
+    if (!config) return res.status(409).json({ error: 'Google OAuth is not configured. Add Google client credentials in Settings.', code: 'GOOGLE_OAUTH_UNCONFIGURED' });
     const state = randomToken();
     db.prepare('UPDATE sessions SET device_name=? WHERE id=?').run(`oauth:${digest(state)}`, req.auth.id);
-    res.json({ url: oauthClient().generateAuthUrl({ access_type: 'offline', prompt: 'consent', scope: ['https://www.googleapis.com/auth/calendar.readonly', 'openid', 'email'], state }) });
+    res.json({ url: oauthClient(config).generateAuthUrl({ access_type: 'offline', prompt: 'consent', scope: ['https://www.googleapis.com/auth/calendar.readonly', 'openid', 'email'], state }) });
   });
   app.get('/api/google/callback', requireAdult, asyncRoute(async (req, res) => {
     if (!req.query.state || req.auth.device_name !== `oauth:${digest(req.query.state)}`) return res.status(400).send('OAuth state is invalid.');
-    const client = oauthClient(), { tokens } = await client.getToken(req.query.code); client.setCredentials(tokens);
+    const client = oauthClient(googleOAuthConfig(db)), { tokens } = await client.getToken(req.query.code); client.setCredentials(tokens);
     const info = await google.oauth2({ version: 'v2', auth: client }).userinfo.get();
     const result = db.prepare('INSERT INTO google_accounts(household_id,label,email,encrypted_tokens) VALUES (?,?,?,?)').run(req.auth.household_id, info.data.email || 'Google', info.data.email, encryptTokens(tokens));
     const list = await google.calendar({ version: 'v3', auth: client }).calendarList.list();
@@ -204,9 +231,11 @@ export function createApp(db) {
     if (!timeMin || !timeMax || Number.isNaN(Date.parse(timeMin)) || Number.isNaN(Date.parse(timeMax))) return res.status(400).json({ error: 'Valid from and to times are required.' });
     const calendars = db.prepare(`SELECT c.*,a.encrypted_tokens,a.id account_id FROM google_calendars c JOIN google_accounts a ON a.id=c.account_id WHERE a.household_id=? AND c.selected=1`).all(req.auth.household_id);
     const events = [], errors = [];
+    const config = calendars.length ? googleOAuthConfig(db) : null;
+    if (calendars.length && !config) return res.json({ events, errors: [{ message: 'Google OAuth is not configured. Ask an adult to add Google client credentials in Settings.' }] });
     for (const calendar of calendars) {
       try {
-        const client = oauthClient(); client.setCredentials(decryptTokens(calendar.encrypted_tokens));
+        const client = oauthClient(config); client.setCredentials(decryptTokens(calendar.encrypted_tokens));
         client.on('tokens', (tokens) => { const current = decryptTokens(calendar.encrypted_tokens); db.prepare('UPDATE google_accounts SET encrypted_tokens=?,status=?,last_error=NULL WHERE id=?').run(encryptTokens({ ...current, ...tokens }), 'active', calendar.account_id); });
         const response = await google.calendar({ version: 'v3', auth: client }).events.list({ calendarId: calendar.google_id, timeMin, timeMax, singleEvents: true, orderBy: 'startTime', timeZone: db.prepare('SELECT timezone FROM households WHERE id=?').get(req.auth.household_id).timezone });
         events.push(...(response.data.items || []).map((e) => ({ id: `${calendar.id}:${e.id}`, title: e.summary || '(Untitled)', start: e.start, end: e.end, color: calendar.color, calendar: calendar.name, source: 'google' })));
@@ -219,6 +248,6 @@ export function createApp(db) {
 
   app.use(express.static(publicDir, { etag: true, maxAge: '1h', setHeaders: (res, file) => { if (file.endsWith('service-worker.js')) res.set('Cache-Control', 'no-cache'); } }));
   app.get('/{*path}', (req, res) => res.sendFile(path.join(publicDir, 'index.html')));
-  app.use((error, req, res, next) => { console.error(error.message); if (!res.headersSent) res.status(500).json({ error: 'The request failed. Try again.' }); else next(error); });
+  app.use((error, req, res, next) => { console.error(error.message); if (!res.headersSent) res.status(error.status || 500).json({ error: error.status ? error.message : 'The request failed. Try again.' }); else next(error); });
   return app;
 }

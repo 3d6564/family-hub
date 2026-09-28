@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDatabase } from '../src/db.js';
 import { budgetSummary, chorePeriod, isChoreDue, monthKey } from '../src/domain.js';
-import { classifyGoogleError, decryptTokens, encryptTokens } from '../src/google.js';
+import { classifyGoogleError, decryptTokens, encryptTokens, googleOAuthConfig } from '../src/google.js';
 import { createApp } from '../src/app.js';
 import { createPairingCode, createSession, digest, hashPassword, verifyPassword } from '../src/auth.js';
 
@@ -44,6 +44,53 @@ test('Google tokens encrypt at rest and errors expose useful states', () => {
   assert.equal(classifyGoogleError({ response: { status: 401 } }).status, 'revoked');
   assert.equal(classifyGoogleError({ response: { status: 403 } }).status, 'unavailable');
   assert.match(classifyGoogleError(new Error('network')).message, /temporarily/);
+});
+
+test('Google OAuth config is adult-only, validated, encrypted, and preferred over environment fallback', async (t) => {
+  const previous = {
+    APP_ORIGIN: process.env.APP_ORIGIN,
+    TOKEN_ENCRYPTION_KEY: process.env.TOKEN_ENCRYPTION_KEY,
+    GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
+    GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI
+  };
+  Object.assign(process.env, {
+    APP_ORIGIN: 'http://127.0.0.1',
+    TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString('base64'),
+    GOOGLE_CLIENT_ID: 'environment-id',
+    GOOGLE_CLIENT_SECRET: 'environment-secret',
+    GOOGLE_REDIRECT_URI: 'https://environment.example.test/api/google/callback'
+  });
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) value === undefined ? delete process.env[key] : process.env[key] = value;
+  });
+
+  const db = database(), home = household(db, 'Home'), password = await hashPassword('a secure password');
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'adult-config@example.test', 'Adult', password).lastInsertRowid);
+  const child = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'child')").run(home, 'child-config@example.test', 'Child', password).lastInsertRowid);
+  const adultToken = createSession(db, { householdId: home, userId: adult }), childToken = createSession(db, { householdId: home, userId: child });
+  const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); });
+  await new Promise((resolve) => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`, route = `${base}/api/google/config`;
+  const headers = { cookie: `family_user_session=${adultToken}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' };
+
+  assert.equal((await fetch(route)).status, 401);
+  assert.equal((await fetch(route, { headers: { cookie: `family_user_session=${childToken}` } })).status, 403);
+  assert.equal((await fetch(route, { method: 'PUT', headers: { ...headers, 'x-csrf-token': undefined }, body: '{}' })).status, 403);
+  let response = await fetch(route, { method: 'PUT', headers, body: JSON.stringify({ clientId: 'id', clientSecret: 'secret', redirectUri: 'http://example.test/callback' }) });
+  assert.equal(response.status, 400);
+  response = await fetch(route, { method: 'PUT', headers, body: JSON.stringify({ clientId: 'database-id', clientSecret: 'database-secret', redirectUri: 'https://calendar.example.test/api/google/callback' }) });
+  assert.equal(response.status, 200);
+
+  const stored = db.prepare('SELECT * FROM deployment_settings WHERE id=1').get();
+  assert.equal(stored.encrypted_google_client_secret.includes('database-secret'), false);
+  assert.equal(decryptTokens(stored.encrypted_google_client_secret).clientSecret, 'database-secret');
+  const status = await (await fetch(route, { headers: { cookie: `family_user_session=${adultToken}` } })).json();
+  assert.deepEqual(status, { configured: true, clientId: 'database-id', redirectUri: 'https://calendar.example.test/api/google/callback', source: 'database', clientSecretConfigured: true });
+  assert.equal(JSON.stringify(status).includes('database-secret'), false);
+  assert.equal(googleOAuthConfig(db).clientId, 'database-id');
+  db.prepare('DELETE FROM deployment_settings').run();
+  assert.equal(googleOAuthConfig(db).clientId, 'environment-id');
 });
 
 test('household APIs do not allow cross-household item changes', async (t) => {

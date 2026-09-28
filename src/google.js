@@ -22,9 +22,32 @@ export function decryptTokens(value, key) {
   return JSON.parse(Buffer.concat([decipher.update(encrypted), decipher.final()]).toString());
 }
 
-export function oauthClient() {
-  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET || !process.env.GOOGLE_REDIRECT_URI) throw new Error('Google OAuth is not configured.');
-  return new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
+/** Resolve saved Google OAuth settings before optional environment fallback. */
+export function googleOAuthConfig(db) {
+  const saved = db.prepare('SELECT google_client_id,encrypted_google_client_secret,google_redirect_uri FROM deployment_settings WHERE id=1').get();
+  if (saved) return {
+    clientId: saved.google_client_id,
+    clientSecret: decryptTokens(saved.encrypted_google_client_secret).clientSecret,
+    redirectUri: saved.google_redirect_uri,
+    source: 'database'
+  };
+  if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_REDIRECT_URI) return {
+    clientId: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    redirectUri: process.env.GOOGLE_REDIRECT_URI,
+    source: 'environment'
+  };
+  return null;
+}
+
+/** Create a Google OAuth client from resolved deployment settings. */
+export function oauthClient(config) {
+  if (!config) {
+    const error = new Error('Google OAuth is not configured. Add Google client credentials in Settings.');
+    error.status = 409;
+    throw error;
+  }
+  return new google.auth.OAuth2(config.clientId, config.clientSecret, config.redirectUri);
 }
 
 export function classifyGoogleError(error) {
