@@ -4,7 +4,7 @@ import { openDatabase } from '../src/db.js';
 import { budgetSummary, chorePeriod, isChoreDue, monthKey } from '../src/domain.js';
 import { classifyGoogleError, decryptTokens, encryptTokens } from '../src/google.js';
 import { createApp } from '../src/app.js';
-import { createSession, hashPassword } from '../src/auth.js';
+import { createPairingCode, createSession, digest, hashPassword, verifyPassword } from '../src/auth.js';
 
 function database() { return openDatabase(':memory:'); }
 function household(db, name) { return Number(db.prepare('INSERT INTO households(name,timezone) VALUES (?,?)').run(name, 'UTC').lastInsertRowid); }
@@ -55,7 +55,7 @@ test('household APIs do not allow cross-household item changes', async (t) => {
   const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); });
   await new Promise((resolve) => server.once('listening', resolve)); const base = `http://127.0.0.1:${server.address().port}`;
   const login = await fetch(`${base}/api/login`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://127.0.0.1', 'x-csrf-token': '1' }, body: JSON.stringify({ email: 'one@example.test', password: 'a secure password' }) });
-  assert.equal(login.status, 200); const cookie = login.headers.get('set-cookie').split(';')[0];
+  assert.equal(login.status, 200); assert.match(login.headers.get('set-cookie'), /^family_user_session=/); const cookie = login.headers.get('set-cookie').split(';')[0];
   const response = await fetch(`${base}/api/groceries/${item}`, { method: 'PATCH', headers: { 'content-type': 'application/json', origin: 'http://127.0.0.1', 'x-csrf-token': '1', cookie }, body: JSON.stringify({ checked: true }) });
   assert.equal(response.status, 404); assert.equal(db.prepare('SELECT checked FROM groceries WHERE id=?').get(item).checked, 0);
 });
@@ -70,7 +70,7 @@ test('completion history is adult-only and scoped to the household', async (t) =
   process.env.APP_ORIGIN = 'http://127.0.0.1'; const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); });
   await new Promise((resolve) => server.once('listening', resolve)); const base = `http://127.0.0.1:${server.address().port}`;
   const token = createSession(db, { householdId: first, userId: adult });
-  const response = await fetch(`${base}/api/routines/history`, { headers: { cookie: `family_session=${token}` } });
+  const response = await fetch(`${base}/api/routines/history`, { headers: { cookie: `family_user_session=${token}` } });
   assert.equal(response.status, 200); assert.deepEqual(await response.json(), []);
 });
 
@@ -81,9 +81,59 @@ test('paired devices can toggle tasks but cannot mutate household records', asyn
   const routine = Number(db.prepare('INSERT INTO routines(household_id,child_id,title) VALUES (?,?,?)').run(home, child, 'Brush teeth').lastInsertRowid);
   process.env.APP_ORIGIN = 'http://127.0.0.1'; const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); });
   await new Promise((resolve) => server.once('listening', resolve)); const base = `http://127.0.0.1:${server.address().port}`, token = createSession(db, { householdId: home, kind: 'device', deviceName: 'Wall' });
-  const headers = { cookie: `family_session=${token}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' };
+  const headers = { cookie: `family_device_session=${token}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' };
   assert.equal((await fetch(`${base}/api/routines/${routine}/toggle`, { method: 'POST', headers })).status, 200);
   for (const [path, method, body] of [['/api/groceries','POST',{name:'Milk'}],['/api/reminders','POST',{title:'No',startsAt:new Date().toISOString()}],['/api/trips','POST',{amountCents:1,occurredOn:'2026-09-28'}],['/api/plans','PUT',{plans:[]}],['/api/members','POST',{}]]) {
     assert.equal((await fetch(base + path, { method, headers, body: JSON.stringify(body) })).status, 403, `${method} ${path}`);
   }
+});
+
+test('adult sessions take priority and logout falls back to the paired device', async (t) => {
+  const db = database(), home = household(db, 'Home');
+  const password = await hashPassword('a secure password');
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'adult@example.test', 'Adult', password).lastInsertRowid);
+  const userToken = createSession(db, { householdId: home, userId: adult });
+  const deviceToken = createSession(db, { householdId: home, kind: 'device', deviceName: 'Wall' });
+  process.env.APP_ORIGIN = 'http://127.0.0.1'; const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); });
+  await new Promise((resolve) => server.once('listening', resolve)); const base = `http://127.0.0.1:${server.address().port}`;
+  const cookie = `family_device_session=${deviceToken}; family_user_session=${userToken}`;
+  let response = await fetch(`${base}/api/me`, { headers: { cookie } });
+  assert.equal((await response.json()).user.name, 'Adult');
+  response = await fetch(`${base}/api/logout`, { method: 'POST', headers: { cookie, origin: 'http://127.0.0.1', 'x-csrf-token': '1' } });
+  assert.match(response.headers.get('set-cookie'), /^family_user_session=;/);
+  assert.equal(db.prepare('SELECT 1 FROM sessions WHERE token_hash=?').get(digest(userToken)), undefined);
+  assert.ok(db.prepare('SELECT 1 FROM sessions WHERE token_hash=?').get(digest(deviceToken)));
+  response = await fetch(`${base}/api/me`, { headers: { cookie: `family_device_session=${deviceToken}` } });
+  assert.deepEqual((await response.json()).device, 'Wall');
+  const code = createPairingCode(db, home);
+  response = await fetch(`${base}/api/pair`, { method: 'POST', headers: { origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' }, body: JSON.stringify({ code, name: 'Second wall' }) });
+  assert.match(response.headers.get('set-cookie'), /^family_device_session=/);
+});
+
+test('password change keeps the current and device sessions and revokes other user sessions', async (t) => {
+  const db = database(), home = household(db, 'Home');
+  const oldPassword = await hashPassword('a secure password');
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'adult@example.test', 'Adult', oldPassword).lastInsertRowid);
+  const current = createSession(db, { householdId: home, userId: adult });
+  const other = createSession(db, { householdId: home, userId: adult });
+  const device = createSession(db, { householdId: home, kind: 'device', deviceName: 'Wall' });
+  process.env.APP_ORIGIN = 'http://127.0.0.1'; const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); });
+  await new Promise((resolve) => server.once('listening', resolve)); const base = `http://127.0.0.1:${server.address().port}`;
+  const response = await fetch(`${base}/api/password`, { method: 'POST', headers: { cookie: `family_user_session=${current}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' }, body: JSON.stringify({ currentPassword: 'a secure password', newPassword: 'a newer secure password' }) });
+  assert.equal(response.status, 200);
+  assert.ok(db.prepare('SELECT 1 FROM sessions WHERE token_hash=?').get(digest(current)));
+  assert.equal(db.prepare('SELECT 1 FROM sessions WHERE token_hash=?').get(digest(other)), undefined);
+  assert.ok(db.prepare('SELECT 1 FROM sessions WHERE token_hash=?').get(digest(device)));
+  assert.equal(await verifyPassword('a newer secure password', db.prepare('SELECT password_hash FROM users WHERE id=?').get(adult).password_hash), true);
+  assert.equal((await fetch(`${base}/api/dashboard`)).status, 401);
+});
+
+test('temporary password exception and pairing codes stay limited to explicit helpers', async () => {
+  await assert.rejects(hashPassword('password'), /12 characters/);
+  assert.ok(await hashPassword('password', { allowTemporaryPassword: true }));
+  const db = database(), home = household(db, 'Home');
+  const code = createPairingCode(db, home);
+  const pairing = db.prepare('SELECT * FROM pairing_codes WHERE code_hash=?').get(digest(code));
+  assert.equal(code.length, 8); assert.equal(pairing.household_id, home); assert.equal(pairing.used_at, null);
+  db.close();
 });

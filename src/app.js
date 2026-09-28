@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { google } from 'googleapis';
-import { authenticate, clearSessionCookie, createSession, csrf, digest, randomToken, requireAdult, requireUser, setSessionCookie, verifyPassword } from './auth.js';
+import { authenticate, clearUserSessionCookie, createPairingCode, createSession, csrf, digest, hashPassword, parseCookies, randomToken, requireAdult, requireUser, setSessionCookie, USER_COOKIE, verifyPassword } from './auth.js';
 import { budgetSummary, chorePeriod, isChoreDue, localDate, monthKey } from './domain.js';
 import { classifyGoogleError, decryptTokens, encryptTokens, oauthClient } from './google.js';
 
@@ -31,7 +31,7 @@ export function createApp(db) {
     const email = text(req.body.email, 254)?.toLowerCase();
     const user = email && db.prepare('SELECT * FROM users WHERE email=?').get(email);
     if (!user || !await verifyPassword(req.body.password, user.password_hash)) return res.status(401).json({ error: 'Email or password is incorrect.' });
-    setSessionCookie(res, createSession(db, { householdId: user.household_id, userId: user.id }));
+    setSessionCookie(res, createSession(db, { householdId: user.household_id, userId: user.id }), 'user');
     res.json({ ok: true });
   }));
   app.post('/api/pair', csrf, (req, res) => {
@@ -40,7 +40,7 @@ export function createApp(db) {
     if (!pairing) return res.status(400).json({ error: 'The pairing code is invalid or expired.' });
     const name = text(req.body.name, 60) || 'Wall display';
     db.prepare('UPDATE pairing_codes SET used_at=CURRENT_TIMESTAMP WHERE id=?').run(pairing.id);
-    setSessionCookie(res, createSession(db, { householdId: pairing.household_id, kind: 'device', deviceName: name }));
+    setSessionCookie(res, createSession(db, { householdId: pairing.household_id, kind: 'device', deviceName: name }), 'device');
     res.json({ ok: true });
   });
 
@@ -51,9 +51,9 @@ export function createApp(db) {
     res.json({ household, user: req.auth.user_id ? { id: req.auth.user_id, name: req.auth.name, email: req.auth.email, role: req.auth.role } : null, device: req.auth.kind === 'device' ? req.auth.device_name : null });
   });
   app.post('/api/logout', (req, res) => {
-    const token = req.headers.cookie?.match(/family_session=([^;]+)/)?.[1];
-    if (token) db.prepare('DELETE FROM sessions WHERE token_hash=?').run(digest(decodeURIComponent(token)));
-    clearSessionCookie(res); res.json({ ok: true });
+    const token = parseCookies(req.headers.cookie)[USER_COOKIE];
+    if (token) db.prepare('DELETE FROM sessions WHERE token_hash=?').run(digest(token));
+    clearUserSessionCookie(res); res.json({ ok: true });
   });
   app.get('/api/events/stream', (req, res) => {
     res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
@@ -81,13 +81,23 @@ export function createApp(db) {
   app.post('/api/members', requireAdult, asyncRoute(async (req, res) => {
     const name = text(req.body.name, 80), email = text(req.body.email, 254)?.toLowerCase();
     if (!name || !email || !['adult', 'child'].includes(req.body.role)) return res.status(400).json({ error: 'Name, email, and role are required.' });
-    const passwordHash = await (await import('./auth.js')).hashPassword(req.body.password);
+    const passwordHash = await hashPassword(req.body.password);
     const result = db.prepare('INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?,?)').run(req.auth.household_id, email, name, passwordHash, req.body.role);
     res.status(201).json({ id: Number(result.lastInsertRowid) });
   }));
+  app.post('/api/password', requireAdult, asyncRoute(async (req, res) => {
+    const user = db.prepare('SELECT password_hash FROM users WHERE id=?').get(req.auth.user_id);
+    if (!user || !await verifyPassword(req.body.currentPassword, user.password_hash)) return res.status(400).json({ error: 'Current password is incorrect.' });
+    if (typeof req.body.newPassword !== 'string' || req.body.newPassword.length < 12) return res.status(400).json({ error: 'New password must be at least 12 characters.' });
+    const passwordHash = await hashPassword(req.body.newPassword);
+    db.transaction(() => {
+      db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(passwordHash, req.auth.user_id);
+      db.prepare("DELETE FROM sessions WHERE user_id=? AND kind='user' AND id<>?").run(req.auth.user_id, req.auth.id);
+    })();
+    res.json({ ok: true });
+  }));
   app.post('/api/pairing-codes', requireAdult, (req, res) => {
-    const code = randomToken(6).slice(0, 8).toUpperCase();
-    db.prepare('INSERT INTO pairing_codes(household_id,code_hash,expires_at) VALUES (?,?,?)').run(req.auth.household_id, digest(code), new Date(Date.now() + 10 * 60000).toISOString());
+    const code = createPairingCode(db, req.auth.household_id);
     res.status(201).json({ code, expiresInMinutes: 10 });
   });
   app.get('/api/devices', requireAdult, (req, res) => res.json(db.prepare("SELECT id,device_name,created_at,expires_at FROM sessions WHERE household_id=? AND kind='device' ORDER BY created_at DESC").all(req.auth.household_id)));

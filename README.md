@@ -9,7 +9,7 @@ Requirements: Node.js 22+, npm, and build tools supported by `better-sqlite3` if
 1. Run `cp .env.example .env`.
 2. Generate the token key with `openssl rand -base64 32` and put it in `TOKEN_ENCRYPTION_KEY`.
 3. Run `npm install`.
-4. Create each adult account separately. Run `npm run bootstrap -- --email adult@example.com --name "Adult Name"`, enter a password of at least 12 characters, then repeat for the second adult.
+4. Create each adult account separately. Run `npm run bootstrap -- --email adult@example.com --name "Adult Name"`, enter a password of at least 12 characters, then repeat for the second adult. For initial local provisioning only, add `--allow-temporary-password` to accept an explicitly temporary password of at least 8 characters, such as `password`. Change it in Settings immediately after sign-in.
 5. Run `npm start`.
 6. Open `http://localhost:3000`.
 
@@ -28,6 +28,8 @@ npm test
 2. Open **Settings** and select **Create pairing code**.
 3. On the wall display, select **Pair display** and enter the code within 10 minutes.
 4. Revoke a display from **Settings** at any time.
+
+Deployment automation can create a 10-minute code for the deployment's household with `npm run pairing-code`. The command prints only the code. In Docker, run `docker compose exec family-hub npm run --silent pairing-code` to suppress npm's command banner.
 
 The wall display gets a separate opaque device session. It can read the dashboard and calendar, and toggle today's routines and chores. It cannot change groceries, reminders, trips, members, budgets, plans, or account settings. It never receives a personal Google session or Google token.
 

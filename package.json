@@ -8,6 +8,7 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "bootstrap": "node src/bootstrap.js",
+    "pairing-code": "node src/pairing-code.js",
     "test": "node --test --test-concurrency=1",
     "check": "node --check src/server.js && node --check public/app.js"
   },
