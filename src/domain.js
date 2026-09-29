@@ -24,15 +24,10 @@ export function parseDays(value) {
   return values.size ? [...values].sort().join(',') : null;
 }
 
-/** Compute the completion key that makes recurring chores reset by period. */
+/** Return the completion key. Scheduled chores reset on each local day. */
 export function chorePeriod(recurrence, date, timezone = 'UTC') {
-  const day = localDate(date, timezone);
   if (recurrence === 'once') return 'once';
-  if (recurrence === 'daily') return day;
-  const noon = new Date(`${day}T12:00:00Z`);
-  const monday = new Date(noon);
-  monday.setUTCDate(noon.getUTCDate() - ((noon.getUTCDay() + 6) % 7));
-  return localDate(monday, 'UTC');
+  return localDate(date, timezone);
 }
 
 /** Return whether a chore is due on the supplied local date. */

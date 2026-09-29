@@ -79,7 +79,8 @@ export function createApp(db, dependencies = {}) {
       FROM routines r JOIN users u ON u.id=r.child_id WHERE r.household_id=? AND r.active=1 ORDER BY r.sort_order,r.id`).all(today, h).filter((r) => r.days.split(',').includes(String(new Date(`${today}T12:00:00Z`).getUTCDay())));
     const chores = db.prepare('SELECT c.*,u.name assignee_name FROM chores c LEFT JOIN users u ON u.id=c.assignee_id WHERE c.household_id=? AND c.active=1 ORDER BY c.sort_order,c.id').all(h)
       .filter((c) => isChoreDue(c, new Date(), household.timezone))
-      .map((c) => ({ ...c, completed: !!db.prepare('SELECT 1 FROM chore_completions WHERE chore_id=? AND period_key=?').get(c.id, chorePeriod(c.recurrence, new Date(), household.timezone)) }));
+      .map((c) => ({ ...c, completed: !!db.prepare('SELECT 1 FROM chore_completions WHERE chore_id=? AND period_key=?').get(c.id, chorePeriod(c.recurrence, new Date(), household.timezone)) }))
+      .filter((c) => c.recurrence !== 'once' || !c.completed);
     const plans = db.prepare('SELECT * FROM family_targets WHERE household_id=? ORDER BY sort_order,id').all(h);
     res.json({ today, routines, chores, plans });
   });
@@ -168,7 +169,7 @@ export function createApp(db, dependencies = {}) {
     emit(req.auth.household_id, 'tasks'); res.json({ completed: !existing });
   });
   app.get('/api/routines/history', requireAdult, (req, res) => {
-    res.json(db.prepare(`SELECT c.completed_on,c.completed_at,r.title,u.name child_name FROM routine_completions c JOIN routines r ON r.id=c.routine_id JOIN users u ON u.id=r.child_id WHERE r.household_id=? ORDER BY c.completed_on DESC,c.completed_at DESC LIMIT 100`).all(req.auth.household_id));
+    res.json(db.prepare(`SELECT c.completed_on,c.completed_at,r.title,u.name child_name FROM routine_completions c JOIN routines r ON r.id=c.routine_id JOIN users u ON u.id=r.child_id WHERE r.household_id=? ORDER BY c.completed_on DESC,c.completed_at DESC LIMIT 2000`).all(req.auth.household_id));
   });
   app.get('/api/chores', requireAdult, (req, res) => res.json(db.prepare('SELECT c.id,c.title,c.days,c.recurrence,c.sort_order,u.name assignee_name FROM chores c LEFT JOIN users u ON u.id=c.assignee_id WHERE c.household_id=? AND c.active=1 ORDER BY c.sort_order,c.id').all(req.auth.household_id)));
   app.put('/api/chore-order', requireAdult, (req, res) => {
@@ -197,11 +198,17 @@ export function createApp(db, dependencies = {}) {
     if (!chore) return res.status(404).json({ error: 'Chore not found.' });
     if (req.auth.kind === 'device' && !isChoreDue(chore, new Date(), chore.timezone)) return res.status(403).json({ error: 'This chore is not due today.' });
     const period = chorePeriod(chore.recurrence, new Date(), chore.timezone), existing = db.prepare('SELECT 1 FROM chore_completions WHERE chore_id=? AND period_key=?').get(chore.id, period);
-    if (existing) db.prepare('DELETE FROM chore_completions WHERE chore_id=? AND period_key=?').run(chore.id, period); else db.prepare('INSERT INTO chore_completions(chore_id,period_key) VALUES (?,?)').run(chore.id, period);
+    if (existing) {
+      db.prepare('DELETE FROM chore_completions WHERE chore_id=? AND period_key=?').run(chore.id, period);
+      if (chore.recurrence === 'once') db.prepare('UPDATE chores SET active=1 WHERE id=?').run(chore.id);
+    } else {
+      db.prepare('INSERT INTO chore_completions(chore_id,period_key) VALUES (?,?)').run(chore.id, period);
+      if (chore.recurrence === 'once') db.prepare('UPDATE chores SET active=0 WHERE id=?').run(chore.id);
+    }
     emit(req.auth.household_id, 'tasks'); res.json({ completed: !existing });
   });
   app.get('/api/chores/history', requireAdult, (req, res) => {
-    res.json(db.prepare(`SELECT c.period_key,c.completed_at,h.title,u.name assignee_name FROM chore_completions c JOIN chores h ON h.id=c.chore_id LEFT JOIN users u ON u.id=h.assignee_id WHERE h.household_id=? ORDER BY c.completed_at DESC LIMIT 100`).all(req.auth.household_id));
+    res.json(db.prepare(`SELECT c.period_key,c.completed_at,h.title,u.name assignee_name FROM chore_completions c JOIN chores h ON h.id=c.chore_id LEFT JOIN users u ON u.id=h.assignee_id WHERE h.household_id=? ORDER BY c.completed_at DESC LIMIT 2000`).all(req.auth.household_id));
   });
   app.put('/api/plans', requireAdult, (req, res) => {
     if (!Array.isArray(req.body.plans) || req.body.plans.length > 20) return res.status(400).json({ error: 'Plans must be a list.' });

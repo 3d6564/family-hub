@@ -17,7 +17,7 @@ test('recurring chore keys reset daily and weekly', () => {
   assert.equal(chorePeriod('daily', new Date('2026-09-28T20:00:00Z')), '2026-09-28');
   assert.equal(chorePeriod('daily', new Date('2026-09-29T20:00:00Z')), '2026-09-29');
   assert.equal(chorePeriod('weekly', new Date('2026-09-28T12:00:00Z')), '2026-09-28');
-  assert.equal(chorePeriod('weekly', new Date('2026-10-04T12:00:00Z')), '2026-09-28');
+  assert.equal(chorePeriod('weekly', new Date('2026-10-04T12:00:00Z')), '2026-10-04');
   assert.equal(chorePeriod('weekly', new Date('2026-10-05T12:00:00Z')), '2026-10-05');
   assert.equal(chorePeriod('once', new Date()), 'once');
 });
@@ -31,6 +31,26 @@ test('chores become due only on their scheduled local days', () => {
   assert.equal(on('daily', '2026-09-29', '2026-09-30'), true);
   assert.equal(on('weekly', '2026-09-29', '2026-10-05'), false);
   assert.equal(on('weekly', '2026-09-29', '2026-10-06'), true);
+});
+
+test('a completed one-time chore leaves the list and yesterday does not count today', async (t) => {
+  const previous = process.env.APP_ORIGIN; process.env.APP_ORIGIN = 'http://127.0.0.1';
+  t.after(() => previous === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previous);
+  const db = database(), home = household(db, 'Home'), password = await hashPassword('a secure password');
+  db.prepare('UPDATE households SET timezone=? WHERE id=?').run('UTC', home);
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'tasks@example.test', 'Adult', password).lastInsertRowid);
+  const once = Number(db.prepare("INSERT INTO chores(household_id,title,recurrence,due_on) VALUES (?,?,'once','2026-09-29')").run(home, 'One poster').lastInsertRowid);
+  const daily = Number(db.prepare("INSERT INTO chores(household_id,title,recurrence,due_on,days) VALUES (?,?,'daily','2026-09-28','1,2,3,4,5')").run(home, 'Make bed').lastInsertRowid);
+  db.prepare('INSERT INTO chore_completions(chore_id,period_key) VALUES (?,?)').run(daily, '2026-09-28');
+  const token = createSession(db, { householdId: home, userId: adult });
+  const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); });
+  await new Promise((resolve) => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`, headers = { cookie: `family_user_session=${token}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1' };
+  assert.equal((await fetch(`${base}/api/chores/${once}/toggle`, { method: 'POST', headers })).status, 200);
+  const body = await (await fetch(`${base}/api/dashboard`, { headers })).json();
+  assert.equal(body.chores.some((chore) => chore.id === once), false);
+  assert.equal(body.chores.find((chore) => chore.id === daily)?.completed, false);
+  assert.equal(db.prepare('SELECT active FROM chores WHERE id=?').get(once).active, 0);
 });
 
 test('day patterns accept names, numbers, and ranges', () => {
