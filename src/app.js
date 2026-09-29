@@ -146,16 +146,16 @@ export function createApp(db, dependencies = {}) {
     emit(req.auth.household_id, 'tasks'); res.json({ ok: true });
   });
   app.post('/api/routines', requireAdult, (req, res) => {
-    const title = text(req.body.title), days = parseDays(req.body.days), child = db.prepare("SELECT id FROM users WHERE id=? AND household_id=? AND role='child'").get(req.body.childId, req.auth.household_id);
-    if (!title || !child || !days) return res.status(400).json({ error: 'Child, title, and valid days are required.' });
+    const title = text(req.body.title, 40), days = parseDays(req.body.days), child = db.prepare("SELECT id FROM users WHERE id=? AND household_id=? AND role='child'").get(req.body.childId, req.auth.household_id);
+    if (!title || !child || !days) return res.status(400).json({ error: 'Child, a title of 40 characters or fewer, and valid days are required.' });
     const order = db.prepare('SELECT COALESCE(MAX(sort_order),-1)+1 next FROM routines WHERE household_id=?').get(req.auth.household_id).next;
     db.prepare('INSERT INTO routines(household_id,child_id,title,days,sort_order) VALUES (?,?,?,?,?)').run(req.auth.household_id, child.id, title, days, order); emit(req.auth.household_id, 'tasks'); res.status(201).json({ ok: true });
   });
   app.patch('/api/routines/:id', requireAdult, (req, res) => {
     const routine = db.prepare('SELECT * FROM routines WHERE id=? AND household_id=?').get(req.params.id, req.auth.household_id);
-    const title = text(req.body.title) || routine?.title, days = req.body.days === undefined ? routine?.days : parseDays(req.body.days);
+    const title = req.body.title === undefined ? routine?.title : text(req.body.title, 40), days = req.body.days === undefined ? routine?.days : parseDays(req.body.days);
     if (!routine) return res.status(404).json({ error: 'Routine not found.' });
-    if (!title || !days) return res.status(400).json({ error: 'A title and valid days are required.' });
+    if (!title || !days) return res.status(400).json({ error: 'A title of 40 characters or fewer and valid days are required.' });
     db.prepare('UPDATE routines SET title=?,days=? WHERE id=?').run(title, days, routine.id); emit(req.auth.household_id, 'tasks'); res.json({ ok: true });
   });
   app.delete('/api/routines/:id', requireAdult, (req, res) => { db.prepare('DELETE FROM routines WHERE id=? AND household_id=?').run(req.params.id, req.auth.household_id); emit(req.auth.household_id, 'tasks'); res.status(204).end(); });
@@ -176,8 +176,8 @@ export function createApp(db, dependencies = {}) {
     emit(req.auth.household_id, 'tasks'); res.json({ ok: true });
   });
   app.post('/api/chores', requireAdult, (req, res) => {
-    const title = text(req.body.title), days = req.body.recurrence === 'once' ? null : parseDays(req.body.days);
-    if (!title || (req.body.recurrence !== 'once' && !days)) return res.status(400).json({ error: 'A title and valid days are required.' });
+    const title = text(req.body.title, 40), days = req.body.recurrence === 'once' ? null : parseDays(req.body.days);
+    if (!title || (req.body.recurrence !== 'once' && !days)) return res.status(400).json({ error: 'A title of 40 characters or fewer and valid days are required.' });
     const assignee = req.body.assigneeId == null ? null : db.prepare('SELECT id FROM users WHERE id=? AND household_id=?').get(req.body.assigneeId, req.auth.household_id)?.id;
     const recurrence = days?.split(',').length === 1 ? 'weekly' : days ? 'daily' : 'once';
     const order = db.prepare('SELECT COALESCE(MAX(sort_order),-1)+1 next FROM chores WHERE household_id=?').get(req.auth.household_id).next;
@@ -185,9 +185,9 @@ export function createApp(db, dependencies = {}) {
   });
   app.patch('/api/chores/:id', requireAdult, (req, res) => {
     const chore = db.prepare('SELECT * FROM chores WHERE id=? AND household_id=?').get(req.params.id, req.auth.household_id);
-    const title = text(req.body.title) || chore?.title, days = req.body.recurrence === 'once' ? null : req.body.days === undefined ? chore?.days : parseDays(req.body.days);
+    const title = req.body.title === undefined ? chore?.title : text(req.body.title, 40), days = req.body.recurrence === 'once' ? null : req.body.days === undefined ? chore?.days : parseDays(req.body.days);
     if (!chore) return res.status(404).json({ error: 'Chore not found.' });
-    if (!title || (req.body.recurrence !== 'once' && !days)) return res.status(400).json({ error: 'A title and valid days are required.' });
+    if (!title || (req.body.recurrence !== 'once' && !days)) return res.status(400).json({ error: 'A title of 40 characters or fewer and valid days are required.' });
     const recurrence = days?.split(',').length === 1 ? 'weekly' : days ? 'daily' : 'once';
     db.prepare('UPDATE chores SET title=?,recurrence=?,due_on=?,days=? WHERE id=?').run(title, recurrence, '0000-01-01', days, chore.id); emit(req.auth.household_id, 'tasks'); res.json({ ok: true });
   });

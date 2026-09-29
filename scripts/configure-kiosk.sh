@@ -4,6 +4,8 @@ set -euo pipefail
 url=${1:-http://localhost:3000/}
 config_dir=${XDG_CONFIG_HOME:-$HOME/.config}/labwc
 autostart=$config_dir/autostart
+rcxml=$config_dir/rc.xml
+pointer_profile='<libinput><device category="default"><accelProfile>flat</accelProfile></device></libinput>'
 desktop_config_dir=${XDG_CONFIG_HOME:-$HOME/.config}
 keyring_override=$desktop_config_dir/autostart/gnome-keyring-secrets.desktop
 marker='# Family Hub kiosk'
@@ -11,6 +13,16 @@ end_marker='# End Family Hub kiosk'
 
 install -d "$config_dir"
 install -d "$desktop_config_dir/autostart"
+if [[ ! -f $rcxml ]]; then
+  printf '<?xml version="1.0"?>\n<openbox_config xmlns="http://openbox.org/3.4/rc">\n%s\n</openbox_config>\n' "$pointer_profile" >"$rcxml"
+elif ! grep -Fq '<accelProfile>flat</accelProfile>' "$rcxml"; then
+  updated=$(mktemp)
+  while IFS= read -r entry || [[ -n $entry ]]; do
+    [[ $entry == '</openbox_config>' ]] && printf '%s\n' "$pointer_profile" >>"$updated"
+    printf '%s\n' "$entry" >>"$updated"
+  done <"$rcxml"
+  mv "$updated" "$rcxml"
+fi
 printf '[Desktop Entry]\nHidden=true\n' >"$keyring_override"
 systemctl --user mask --now gnome-keyring-daemon.service gnome-keyring-daemon.socket || true
 touch "$autostart"
@@ -32,7 +44,7 @@ if grep -Fq "$marker" "$autostart"; then
 fi
 {
   printf '\n%s\n' "$marker"
-  printf '(sleep 5; chromium --ozone-platform=wayland --user-data-dir="$HOME/.config/family-hub-kiosk" --password-store=basic --kiosk --noerrdialogs --disable-session-crashed-bubble --disable-infobars --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 %q) &\n' "$url"
+  printf '(sleep 5; chromium --ozone-platform=wayland --disable-gpu-rasterization --user-data-dir="$HOME/.config/family-hub-kiosk" --password-store=basic --kiosk --noerrdialogs --disable-session-crashed-bubble --disable-infobars --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 %q) &\n' "$url"
   printf '%s\n' "$end_marker"
 } >>"$autostart"
 
