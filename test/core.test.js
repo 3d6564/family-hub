@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDatabase } from '../src/db.js';
-import { budgetSummary, chorePeriod, isChoreDue, monthKey } from '../src/domain.js';
+import { chorePeriod, isChoreDue, monthKey, parseDays } from '../src/domain.js';
 import { assertSafeRemoteUrl, parseFeedEvents, validateFeedUrl } from '../src/ical.js';
 import { createApp } from '../src/app.js';
 import { createPairingCode, createSession, digest, hashPassword, verifyPassword } from '../src/auth.js';
@@ -9,13 +9,8 @@ import { createPairingCode, createSession, digest, hashPassword, verifyPassword 
 function database() { return openDatabase(':memory:'); }
 function household(db, name) { return Number(db.prepare('INSERT INTO households(name,timezone) VALUES (?,?)').run(name, 'UTC').lastInsertRowid); }
 
-test('budget totals include only the selected household and calendar month', () => {
-  const db = database(), first = household(db, 'First'), second = household(db, 'Second');
-  db.prepare('INSERT INTO grocery_budgets VALUES (?,?,?)').run(first, '2026-09', 50000);
-  const add = db.prepare('INSERT INTO grocery_trips(household_id,amount_cents,occurred_on) VALUES (?,?,?)');
-  add.run(first, 1200, '2026-09-01'); add.run(first, 3000, '2026-09-30'); add.run(first, 9000, '2026-10-01'); add.run(second, 8000, '2026-09-15');
-  assert.deepEqual(budgetSummary(db, first, '2026-09'), { month: '2026-09', budgetCents: 50000, spentCents: 4200, remainingCents: 45800 });
-  assert.equal(monthKey(new Date('2026-10-01T00:30:00Z'), 'America/Los_Angeles'), '2026-09'); db.close();
+test('month keys use the household timezone', () => {
+  assert.equal(monthKey(new Date('2026-10-01T00:30:00Z'), 'America/Los_Angeles'), '2026-09');
 });
 
 test('recurring chore keys reset daily and weekly', () => {
@@ -29,13 +24,20 @@ test('recurring chore keys reset daily and weekly', () => {
 
 test('chores become due only on their scheduled local days', () => {
   const on = (recurrence, dueOn, now) => isChoreDue({ recurrence, due_on: dueOn }, new Date(`${now}T12:00:00Z`), 'UTC');
-  assert.equal(on('once', '2026-09-29', '2026-09-28'), false);
+  assert.equal(on('once', '2026-09-29', '2026-09-28'), true);
   assert.equal(on('once', '2026-09-29', '2026-09-29'), true);
-  assert.equal(on('once', '2026-09-29', '2026-09-30'), false);
+  assert.equal(on('once', '2026-09-29', '2026-09-30'), true);
   assert.equal(on('daily', '2026-09-29', '2026-09-28'), false);
   assert.equal(on('daily', '2026-09-29', '2026-09-30'), true);
   assert.equal(on('weekly', '2026-09-29', '2026-10-05'), false);
   assert.equal(on('weekly', '2026-09-29', '2026-10-06'), true);
+});
+
+test('day patterns accept names, numbers, and ranges', () => {
+  assert.equal(parseDays('0-6'), '0,1,2,3,4,5,6');
+  assert.equal(parseDays('m-f'), '1,2,3,4,5');
+  assert.equal(parseDays('m,tu,th,f'), '1,2,4,5');
+  assert.equal(parseDays('fri-mon'), null);
 });
 
 test('calendar feed CRUD is adult-only, household-scoped, and never returns URLs', async (t) => {
@@ -58,7 +60,62 @@ test('calendar feed CRUD is adult-only, household-scoped, and never returns URLs
   const list = await (await fetch(route, { headers })).json();
   assert.equal(list.length, 1); assert.equal(list[0].configured, 1); assert.equal(JSON.stringify(list).includes('private.ics'), false); assert.equal(JSON.stringify(list).includes('secret.ics'), false);
   assert.equal((await fetch(`${route}/${created.id}`, { method: 'PATCH', headers, body: JSON.stringify({ enabled: false }) })).status, 200);
+  response = await fetch(`${route}/${created.id}`, { method: 'PATCH', headers, body: JSON.stringify({ name: 'Updated family', url: 'https://calendar.example.test/updated.ics', color: '#123456' }) });
+  assert.equal(response.status, 200); assert.deepEqual(db.prepare('SELECT name,url,color FROM calendar_feeds WHERE id=?').get(created.id), { name: 'Updated family', url: 'https://calendar.example.test/updated.ics', color: '#123456' });
   assert.equal((await fetch(`${route}/${created.id}`, { method: 'DELETE', headers })).status, 204);
+});
+
+test('children can be added without login details and adults cannot', async (t) => {
+  const previous = process.env.APP_ORIGIN; process.env.APP_ORIGIN = 'http://127.0.0.1';
+  t.after(() => previous === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previous);
+  const db = database(), home = household(db, 'Home'), password = await hashPassword('a secure password');
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'adult@example.test', 'Adult', password).lastInsertRowid);
+  const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); }); await new Promise((resolve) => server.once('listening', resolve));
+  const headers = { cookie: `family_user_session=${createSession(db, { householdId: home, userId: adult })}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' }, base = `http://127.0.0.1:${server.address().port}`, route = `${base}/api/members`;
+  const childResponse = await fetch(route, { method: 'POST', headers, body: JSON.stringify({ name: 'Child', role: 'child' }) });
+  assert.equal(childResponse.status, 201); const child = await childResponse.json();
+  assert.match(db.prepare("SELECT email FROM users WHERE name='Child'").get().email, /^child-[\w-]+@family-hub\.invalid$/);
+  assert.equal((await fetch(`${route}/${child.id}`, { method: 'PATCH', headers, body: JSON.stringify({ name: 'Updated child', role: 'child' }) })).status, 200);
+  assert.equal(db.prepare('SELECT name FROM users WHERE id=?').get(child.id).name, 'Updated child');
+  const listedChild = (await (await fetch(route, { headers })).json()).find((member) => member.id === child.id);
+  assert.equal(listedChild.has_email, 0);
+  assert.equal((await fetch(route, { method: 'POST', headers, body: JSON.stringify({ name: 'Adult two', role: 'adult' }) })).status, 400);
+  assert.equal((await fetch(`${base}/api/household/week-start`, { method: 'PUT', headers, body: JSON.stringify({ weekStartsOn: 0 }) })).status, 200);
+  assert.equal(db.prepare('SELECT week_starts_on FROM households WHERE id=?').get(home).week_starts_on, 0);
+});
+
+test('adults can reorder every routine in their household', async (t) => {
+  const previous = process.env.APP_ORIGIN; process.env.APP_ORIGIN = 'http://127.0.0.1';
+  t.after(() => previous === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previous);
+  const db = database(), home = household(db, 'Home'), other = household(db, 'Other'), password = await hashPassword('a secure password');
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'adult@example.test', 'Adult', password).lastInsertRowid);
+  const child = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'child')").run(home, 'child@example.test', 'Child', password).lastInsertRowid);
+  const first = Number(db.prepare('INSERT INTO routines(household_id,child_id,title,sort_order) VALUES (?,?,?,?)').run(home, child, 'First', 0).lastInsertRowid);
+  const second = Number(db.prepare('INSERT INTO routines(household_id,child_id,title,sort_order) VALUES (?,?,?,?)').run(home, child, 'Second', 1).lastInsertRowid);
+  db.prepare('INSERT INTO routines(household_id,child_id,title,sort_order) VALUES (?,?,?,?)').run(other, child, 'Private', 0);
+  const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); }); await new Promise((resolve) => server.once('listening', resolve));
+  const headers = { cookie: `family_user_session=${createSession(db, { householdId: home, userId: adult })}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' };
+  assert.equal((await fetch(`http://127.0.0.1:${server.address().port}/api/routine-order`, { method: 'PUT', headers, body: JSON.stringify({ ids: [second, first] }) })).status, 200);
+  assert.deepEqual(db.prepare('SELECT id FROM routines WHERE household_id=? ORDER BY sort_order').all(home).map((row) => row.id), [second, first]);
+});
+
+test('adults can edit routines, chores, and reminders in their household', async (t) => {
+  const previous = process.env.APP_ORIGIN; process.env.APP_ORIGIN = 'http://127.0.0.1';
+  t.after(() => previous === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previous);
+  const db = database(), home = household(db, 'Home'), password = await hashPassword('a secure password');
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'adult@example.test', 'Adult', password).lastInsertRowid);
+  const child = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'child')").run(home, 'child@example.test', 'Child', password).lastInsertRowid);
+  const routine = Number(db.prepare('INSERT INTO routines(household_id,child_id,title,days) VALUES (?,?,?,?)').run(home, child, 'Old routine', '1,2').lastInsertRowid);
+  const chore = Number(db.prepare('INSERT INTO chores(household_id,assignee_id,title,recurrence,due_on) VALUES (?,?,?,?,?)').run(home, child, 'Old chore', 'once', '2026-09-28').lastInsertRowid);
+  const reminder = Number(db.prepare('INSERT INTO local_reminders(household_id,title,starts_at,created_by) VALUES (?,?,?,?)').run(home, 'Old reminder', '2026-09-28T12:00:00.000Z', adult).lastInsertRowid);
+  const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); }); await new Promise((resolve) => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`, headers = { cookie: `family_user_session=${createSession(db, { householdId: home, userId: adult })}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' };
+  assert.equal((await fetch(`${base}/api/routines/${routine}`, { method: 'PATCH', headers, body: JSON.stringify({ title: 'New routine', days: '1,2,3' }) })).status, 200);
+  assert.equal((await fetch(`${base}/api/chores/${chore}`, { method: 'PATCH', headers, body: JSON.stringify({ title: 'New chore', recurrence: 'scheduled', days: 'sat' }) })).status, 200);
+  assert.equal((await fetch(`${base}/api/reminders/${reminder}`, { method: 'PATCH', headers, body: JSON.stringify({ title: 'New reminder', startsAt: '2026-09-29T12:00:00.000Z' }) })).status, 200);
+  assert.equal(db.prepare('SELECT title FROM routines WHERE id=?').get(routine).title, 'New routine');
+  assert.equal(db.prepare('SELECT recurrence FROM chores WHERE id=?').get(chore).recurrence, 'weekly');
+  assert.equal(db.prepare('SELECT title FROM local_reminders WHERE id=?').get(reminder).title, 'New reminder');
 });
 
 test('calendar feed URL validation and production address checks block unsafe targets', async () => {
@@ -102,14 +159,14 @@ test('household APIs do not allow cross-household item changes', async (t) => {
   const db = database(), first = household(db, 'First'), second = household(db, 'Second');
   const password = await hashPassword('a secure password');
   db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(first, 'one@example.test', 'One', password);
-  const item = Number(db.prepare('INSERT INTO groceries(household_id,name) VALUES (?,?)').run(second, 'Private item').lastInsertRowid);
+  const item = Number(db.prepare("INSERT INTO chores(household_id,title,due_on) VALUES (?,?,?)").run(second, 'Private chore', '2026-09-28').lastInsertRowid);
   process.env.APP_ORIGIN = 'http://127.0.0.1';
   const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); });
   await new Promise((resolve) => server.once('listening', resolve)); const base = `http://127.0.0.1:${server.address().port}`;
   const login = await fetch(`${base}/api/login`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://127.0.0.1', 'x-csrf-token': '1' }, body: JSON.stringify({ email: 'one@example.test', password: 'a secure password' }) });
   assert.equal(login.status, 200); assert.match(login.headers.get('set-cookie'), /^family_user_session=/); const cookie = login.headers.get('set-cookie').split(';')[0];
-  const response = await fetch(`${base}/api/groceries/${item}`, { method: 'PATCH', headers: { 'content-type': 'application/json', origin: 'http://127.0.0.1', 'x-csrf-token': '1', cookie }, body: JSON.stringify({ checked: true }) });
-  assert.equal(response.status, 404); assert.equal(db.prepare('SELECT checked FROM groceries WHERE id=?').get(item).checked, 0);
+  const response = await fetch(`${base}/api/chores/${item}`, { method: 'PATCH', headers: { 'content-type': 'application/json', origin: 'http://127.0.0.1', 'x-csrf-token': '1', cookie }, body: JSON.stringify({ title: 'Changed' }) });
+  assert.equal(response.status, 404); assert.equal(db.prepare('SELECT title FROM chores WHERE id=?').get(item).title, 'Private chore');
 });
 
 test('completion history is adult-only and scoped to the household', async (t) => {
@@ -135,7 +192,7 @@ test('paired devices can toggle tasks but cannot mutate household records', asyn
   await new Promise((resolve) => server.once('listening', resolve)); const base = `http://127.0.0.1:${server.address().port}`, token = createSession(db, { householdId: home, kind: 'device', deviceName: 'Wall' });
   const headers = { cookie: `family_device_session=${token}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' };
   assert.equal((await fetch(`${base}/api/routines/${routine}/toggle`, { method: 'POST', headers })).status, 200);
-  for (const [path, method, body] of [['/api/groceries','POST',{name:'Milk'}],['/api/reminders','POST',{title:'No',startsAt:new Date().toISOString()}],['/api/trips','POST',{amountCents:1,occurredOn:'2026-09-28'}],['/api/plans','PUT',{plans:[]}],['/api/members','POST',{}]]) {
+  for (const [path, method, body] of [['/api/reminders','POST',{title:'No',startsAt:new Date().toISOString()}],['/api/plans','PUT',{plans:[]}],['/api/members','POST',{}],['/api/routine-order','PUT',{ids:[]}]]) {
     assert.equal((await fetch(base + path, { method, headers, body: JSON.stringify(body) })).status, 403, `${method} ${path}`);
   }
 });

@@ -9,6 +9,21 @@ export function localDate(date, timezone = 'UTC') {
   return ['year', 'month', 'day'].map((type) => parts.find((p) => p.type === type).value).join('-');
 }
 
+/** Convert day names, numbers, and ranges into a sorted weekday list. */
+export function parseDays(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const names = { sun: 0, su: 0, s: 0, mon: 1, mo: 1, m: 1, tue: 2, tu: 2, t: 2, wed: 3, we: 3, w: 3, thu: 4, th: 4, r: 4, fri: 5, fr: 5, f: 5, sat: 6, sa: 6 };
+  const day = (token) => /^\d$/.test(token) ? +token : names[token];
+  const values = new Set();
+  for (const part of value.toLowerCase().replace(/\s/g, '').split(',')) {
+    const range = part.split('-'); if (range.length > 2) return null;
+    const first = day(range[0]), last = range[1] === undefined ? first : day(range[1]);
+    if (!Number.isInteger(first) || !Number.isInteger(last) || first > last) return null;
+    for (let current = first; current <= last; current++) values.add(current);
+  }
+  return values.size ? [...values].sort().join(',') : null;
+}
+
 /** Compute the completion key that makes recurring chores reset by period. */
 export function chorePeriod(recurrence, date, timezone = 'UTC') {
   const day = localDate(date, timezone);
@@ -23,15 +38,10 @@ export function chorePeriod(recurrence, date, timezone = 'UTC') {
 /** Return whether a chore is due on the supplied local date. */
 export function isChoreDue(chore, date, timezone = 'UTC') {
   const today = localDate(date, timezone);
+  if (chore.recurrence === 'once') return true;
+  if (chore.days) return chore.days.split(',').includes(String(new Date(`${today}T12:00:00Z`).getUTCDay()));
   if (today < chore.due_on) return false;
-  if (chore.recurrence === 'once') return today === chore.due_on;
   if (chore.recurrence === 'daily') return true;
   const weekday = (value) => new Date(`${value}T12:00:00Z`).getUTCDay();
   return weekday(today) === weekday(chore.due_on);
-}
-
-export function budgetSummary(db, householdId, month) {
-  const budget = db.prepare('SELECT amount_cents FROM grocery_budgets WHERE household_id=? AND month=?').get(householdId, month)?.amount_cents || 0;
-  const spent = db.prepare("SELECT COALESCE(SUM(amount_cents),0) total FROM grocery_trips WHERE household_id=? AND substr(occurred_on,1,7)=?").get(householdId, month).total;
-  return { month, budgetCents: budget, spentCents: spent, remainingCents: budget - spent };
 }

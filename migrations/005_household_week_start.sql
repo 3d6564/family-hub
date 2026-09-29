@@ -1,0 +1,1 @@
+ALTER TABLE households ADD COLUMN week_starts_on INTEGER NOT NULL DEFAULT 1 CHECK(week_starts_on BETWEEN 0 AND 6);

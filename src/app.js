@@ -3,13 +3,20 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { authenticate, clearUserSessionCookie, createPairingCode, createSession, csrf, digest, hashPassword, parseCookies, requireAdult, requireUser, setSessionCookie, USER_COOKIE, verifyPassword } from './auth.js';
-import { budgetSummary, chorePeriod, isChoreDue, localDate, monthKey } from './domain.js';
+import { chorePeriod, isChoreDue, localDate, parseDays } from './domain.js';
 import { fetchFeedEvents, validateFeedUrl } from './ical.js';
 
 const publicDir = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'public');
 const clients = new Map();
 const text = (value, max = 120) => typeof value === 'string' && value.trim() && value.trim().length <= max ? value.trim() : null;
-const integer = (value) => Number.isInteger(+value) && +value >= 0 ? +value : null;
+function reorder(db, table, householdId, ids) {
+  const existing = db.prepare(`SELECT id FROM ${table} WHERE household_id=?`).all(householdId).map((row) => row.id);
+  const requested = ids.map(Number);
+  if (!Array.isArray(ids) || requested.length !== existing.length || requested.some((id) => !existing.includes(id))) return false;
+  const update = db.prepare(`UPDATE ${table} SET sort_order=? WHERE id=? AND household_id=?`);
+  db.transaction(() => requested.forEach((id, index) => update.run(index, id, householdId)))();
+  return true;
+}
 
 function emit(householdId, event = 'update') {
   for (const res of clients.get(householdId) || []) res.write(`event: ${event}\ndata: {}\n\n`);
@@ -48,7 +55,7 @@ export function createApp(db, dependencies = {}) {
   const auth = authenticate(db);
   app.use('/api', auth, csrf);
   app.get('/api/me', (req, res) => {
-    const household = db.prepare('SELECT id,name,timezone FROM households WHERE id=?').get(req.auth.household_id);
+    const household = db.prepare('SELECT id,name,timezone,week_starts_on weekStartsOn FROM households WHERE id=?').get(req.auth.household_id);
     res.json({ household, user: req.auth.user_id ? { id: req.auth.user_id, name: req.auth.name, email: req.auth.email, role: req.auth.role } : null, device: req.auth.kind === 'device' ? req.auth.device_name : null });
   });
   app.get('/api/version', (req, res) => res.json({ version: deploymentVersion }));
@@ -68,24 +75,46 @@ export function createApp(db, dependencies = {}) {
     const h = req.auth.household_id;
     const household = db.prepare('SELECT timezone FROM households WHERE id=?').get(h);
     const today = localDate(new Date(), household.timezone);
-    const month = monthKey(new Date(), household.timezone);
-    const groceries = db.prepare('SELECT * FROM groceries WHERE household_id=? ORDER BY checked,created_at').all(h);
     const routines = db.prepare(`SELECT r.*,u.name child_name,EXISTS(SELECT 1 FROM routine_completions c WHERE c.routine_id=r.id AND c.completed_on=?) completed
-      FROM routines r JOIN users u ON u.id=r.child_id WHERE r.household_id=? AND r.active=1 ORDER BY u.name,r.id`).all(today, h).filter((r) => r.days.split(',').includes(String(new Date(`${today}T12:00:00Z`).getUTCDay())));
-    const chores = db.prepare('SELECT c.*,u.name assignee_name FROM chores c LEFT JOIN users u ON u.id=c.assignee_id WHERE c.household_id=? AND c.active=1 ORDER BY c.due_on,c.id').all(h)
+      FROM routines r JOIN users u ON u.id=r.child_id WHERE r.household_id=? AND r.active=1 ORDER BY r.sort_order,r.id`).all(today, h).filter((r) => r.days.split(',').includes(String(new Date(`${today}T12:00:00Z`).getUTCDay())));
+    const chores = db.prepare('SELECT c.*,u.name assignee_name FROM chores c LEFT JOIN users u ON u.id=c.assignee_id WHERE c.household_id=? AND c.active=1 ORDER BY c.sort_order,c.id').all(h)
       .filter((c) => isChoreDue(c, new Date(), household.timezone))
       .map((c) => ({ ...c, completed: !!db.prepare('SELECT 1 FROM chore_completions WHERE chore_id=? AND period_key=?').get(c.id, chorePeriod(c.recurrence, new Date(), household.timezone)) }));
     const plans = db.prepare('SELECT * FROM family_targets WHERE household_id=? ORDER BY sort_order,id').all(h);
-    res.json({ today, groceries, routines, chores, plans, budget: budgetSummary(db, h, month) });
+    res.json({ today, routines, chores, plans });
   });
 
-  app.get('/api/members', requireAdult, (req, res) => res.json(db.prepare('SELECT id,name,role FROM users WHERE household_id=? ORDER BY role,name').all(req.auth.household_id)));
+  app.get('/api/members', requireAdult, (req, res) => res.json(db.prepare("SELECT id,name,role,email NOT LIKE 'child-%@family-hub.invalid' has_email FROM users WHERE household_id=? ORDER BY role,name").all(req.auth.household_id)));
   app.post('/api/members', requireAdult, asyncRoute(async (req, res) => {
-    const name = text(req.body.name, 80), email = text(req.body.email, 254)?.toLowerCase();
-    if (!name || !email || !['adult', 'child'].includes(req.body.role)) return res.status(400).json({ error: 'Name, email, and role are required.' });
-    const passwordHash = await hashPassword(req.body.password);
-    const result = db.prepare('INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?,?)').run(req.auth.household_id, email, name, passwordHash, req.body.role);
+    const name = text(req.body.name, 80), email = text(req.body.email, 254)?.toLowerCase(), role = req.body.role;
+    if (!name || !['adult', 'child'].includes(role) || (role === 'adult' && (!email || !req.body.password))) return res.status(400).json({ error: 'Name, email, and password are required for adult accounts.' });
+    const passwordHash = await hashPassword(req.body.password || crypto.randomUUID());
+    const memberEmail = email || `child-${crypto.randomUUID()}@family-hub.invalid`;
+    const result = db.prepare('INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?,?)').run(req.auth.household_id, memberEmail, name, passwordHash, role);
     res.status(201).json({ id: Number(result.lastInsertRowid) });
+  }));
+  app.patch('/api/members/:id', requireAdult, asyncRoute(async (req, res) => {
+    const member = db.prepare('SELECT * FROM users WHERE id=? AND household_id=?').get(req.params.id, req.auth.household_id);
+    if (!member) return res.status(404).json({ error: 'Household member not found.' });
+    const name = req.body.name === undefined ? member.name : text(req.body.name, 80);
+    const role = req.body.role === undefined ? member.role : req.body.role;
+    if (!name || !['adult', 'child'].includes(role)) return res.status(400).json({ error: 'A name and valid role are required.' });
+    if (member.id === req.auth.user_id && role !== 'adult') return res.status(400).json({ error: 'Your own account must remain an adult account.' });
+    let email = member.email, passwordHash = member.password_hash;
+    if (req.body.email !== undefined) {
+      const requestedEmail = text(req.body.email, 254)?.toLowerCase();
+      if (!requestedEmail) {
+        if (role !== 'child') return res.status(400).json({ error: 'Adult accounts need an email address.' });
+        email = `child-${crypto.randomUUID()}@family-hub.invalid`; passwordHash = await hashPassword(crypto.randomUUID());
+      } else {
+        if (typeof req.body.password !== 'string' || req.body.password.length < 12) return res.status(400).json({ error: 'A new email needs a password with at least 12 characters.' });
+        const existing = db.prepare('SELECT id FROM users WHERE household_id=? AND email=?').get(req.auth.household_id, requestedEmail);
+        if (existing && existing.id !== member.id) return res.status(400).json({ error: 'That email is already in use.' });
+        email = requestedEmail; passwordHash = await hashPassword(req.body.password);
+      }
+    } else if (req.body.password) passwordHash = await hashPassword(req.body.password);
+    db.prepare('UPDATE users SET name=?,role=?,email=?,password_hash=? WHERE id=?').run(name, role, email, passwordHash, member.id);
+    res.json({ ok: true });
   }));
   app.post('/api/password', requireAdult, asyncRoute(async (req, res) => {
     const user = db.prepare('SELECT password_hash FROM users WHERE id=?').get(req.auth.user_id);
@@ -102,40 +131,34 @@ export function createApp(db, dependencies = {}) {
     const code = createPairingCode(db, req.auth.household_id);
     res.status(201).json({ code, expiresInMinutes: 10 });
   });
+  app.put('/api/household/week-start', requireAdult, (req, res) => {
+    const weekStartsOn = +req.body.weekStartsOn;
+    if (!Number.isInteger(weekStartsOn) || weekStartsOn < 0 || weekStartsOn > 6) return res.status(400).json({ error: 'Week start must be a day of the week.' });
+    db.prepare('UPDATE households SET week_starts_on=? WHERE id=?').run(weekStartsOn, req.auth.household_id);
+    emit(req.auth.household_id, 'calendar'); res.json({ weekStartsOn });
+  });
   app.get('/api/devices', requireAdult, (req, res) => res.json(db.prepare("SELECT id,device_name,created_at,expires_at FROM sessions WHERE household_id=? AND kind='device' ORDER BY created_at DESC").all(req.auth.household_id)));
   app.delete('/api/devices/:id', requireAdult, (req, res) => { db.prepare("DELETE FROM sessions WHERE id=? AND household_id=? AND kind='device'").run(req.params.id, req.auth.household_id); res.status(204).end(); });
 
-  app.post('/api/groceries', requireUser, (req, res) => {
-    const name = text(req.body.name), quantity = text(req.body.quantity, 40);
-    if (!name) return res.status(400).json({ error: 'Item name is required.' });
-    const result = db.prepare('INSERT INTO groceries(household_id,name,quantity) VALUES (?,?,?)').run(req.auth.household_id, name, quantity);
-    emit(req.auth.household_id, 'groceries'); res.status(201).json({ id: Number(result.lastInsertRowid) });
+  app.get('/api/routines', requireAdult, (req, res) => res.json(db.prepare('SELECT r.id,r.title,r.days,r.sort_order,u.name child_name FROM routines r JOIN users u ON u.id=r.child_id WHERE r.household_id=? AND r.active=1 ORDER BY r.sort_order,r.id').all(req.auth.household_id)));
+  app.put('/api/routine-order', requireAdult, (req, res) => {
+    if (!reorder(db, 'routines', req.auth.household_id, req.body.ids || [])) return res.status(400).json({ error: 'The routine order must include every routine once.' });
+    emit(req.auth.household_id, 'tasks'); res.json({ ok: true });
   });
-  app.patch('/api/groceries/:id', requireUser, (req, res) => {
-    const row = db.prepare('SELECT * FROM groceries WHERE id=? AND household_id=?').get(req.params.id, req.auth.household_id);
-    if (!row) return res.status(404).json({ error: 'Item not found.' });
-    db.prepare('UPDATE groceries SET name=?,quantity=?,checked=? WHERE id=?').run(text(req.body.name) || row.name, text(req.body.quantity, 40) ?? row.quantity, req.body.checked == null ? row.checked : +!!req.body.checked, row.id);
-    emit(req.auth.household_id, 'groceries'); res.json({ ok: true });
-  });
-  app.delete('/api/groceries/:id', requireUser, (req, res) => { db.prepare('DELETE FROM groceries WHERE id=? AND household_id=?').run(req.params.id, req.auth.household_id); emit(req.auth.household_id, 'groceries'); res.status(204).end(); });
-  app.post('/api/groceries/clear', requireUser, (req, res) => { db.prepare('DELETE FROM groceries WHERE household_id=? AND checked=1').run(req.auth.household_id); emit(req.auth.household_id, 'groceries'); res.json({ ok: true }); });
-  app.put('/api/budget/:month', requireAdult, (req, res) => {
-    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(req.params.month) || integer(req.body.amountCents) == null) return res.status(400).json({ error: 'A valid month and amount are required.' });
-    db.prepare('INSERT INTO grocery_budgets VALUES (?,?,?) ON CONFLICT(household_id,month) DO UPDATE SET amount_cents=excluded.amount_cents').run(req.auth.household_id, req.params.month, +req.body.amountCents); emit(req.auth.household_id, 'groceries'); res.json({ ok: true });
-  });
-  app.get('/api/trips', requireAdult, (req, res) => res.json(db.prepare('SELECT * FROM grocery_trips WHERE household_id=? ORDER BY occurred_on DESC,id DESC').all(req.auth.household_id)));
-  app.post('/api/trips', requireAdult, (req, res) => {
-    const amount = integer(req.body.amountCents), date = text(req.body.occurredOn, 10), note = text(req.body.note, 500);
-    if (amount == null || !/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return res.status(400).json({ error: 'Amount and date are required.' });
-    if (req.body.note && !note) return res.status(400).json({ error: 'Trip notes must be 500 characters or fewer.' });
-    db.prepare('INSERT INTO grocery_trips(household_id,amount_cents,store,occurred_on,note) VALUES (?,?,?,?,?)').run(req.auth.household_id, amount, text(req.body.store, 80), date, note); emit(req.auth.household_id, 'groceries'); res.status(201).json({ ok: true });
-  });
-
   app.post('/api/routines', requireAdult, (req, res) => {
-    const title = text(req.body.title), child = db.prepare("SELECT id FROM users WHERE id=? AND household_id=? AND role='child'").get(req.body.childId, req.auth.household_id);
-    if (!title || !child || !/^[0-6](,[0-6])*$/.test(req.body.days || '')) return res.status(400).json({ error: 'Child, title, and days are required.' });
-    db.prepare('INSERT INTO routines(household_id,child_id,title,days) VALUES (?,?,?,?)').run(req.auth.household_id, child.id, title, req.body.days); emit(req.auth.household_id, 'tasks'); res.status(201).json({ ok: true });
+    const title = text(req.body.title), days = parseDays(req.body.days), child = db.prepare("SELECT id FROM users WHERE id=? AND household_id=? AND role='child'").get(req.body.childId, req.auth.household_id);
+    if (!title || !child || !days) return res.status(400).json({ error: 'Child, title, and valid days are required.' });
+    const order = db.prepare('SELECT COALESCE(MAX(sort_order),-1)+1 next FROM routines WHERE household_id=?').get(req.auth.household_id).next;
+    db.prepare('INSERT INTO routines(household_id,child_id,title,days,sort_order) VALUES (?,?,?,?,?)').run(req.auth.household_id, child.id, title, days, order); emit(req.auth.household_id, 'tasks'); res.status(201).json({ ok: true });
   });
+  app.patch('/api/routines/:id', requireAdult, (req, res) => {
+    const routine = db.prepare('SELECT * FROM routines WHERE id=? AND household_id=?').get(req.params.id, req.auth.household_id);
+    const title = text(req.body.title) || routine?.title, days = req.body.days === undefined ? routine?.days : parseDays(req.body.days);
+    if (!routine) return res.status(404).json({ error: 'Routine not found.' });
+    if (!title || !days) return res.status(400).json({ error: 'A title and valid days are required.' });
+    db.prepare('UPDATE routines SET title=?,days=? WHERE id=?').run(title, days, routine.id); emit(req.auth.household_id, 'tasks'); res.json({ ok: true });
+  });
+  app.delete('/api/routines/:id', requireAdult, (req, res) => { db.prepare('DELETE FROM routines WHERE id=? AND household_id=?').run(req.params.id, req.auth.household_id); emit(req.auth.household_id, 'tasks'); res.status(204).end(); });
   app.post('/api/routines/:id/toggle', (req, res) => {
     const routine = db.prepare('SELECT r.*,h.timezone FROM routines r JOIN households h ON h.id=r.household_id WHERE r.id=? AND r.household_id=?').get(req.params.id, req.auth.household_id);
     if (!routine) return res.status(404).json({ error: 'Routine not found.' });
@@ -147,12 +170,28 @@ export function createApp(db, dependencies = {}) {
   app.get('/api/routines/history', requireAdult, (req, res) => {
     res.json(db.prepare(`SELECT c.completed_on,c.completed_at,r.title,u.name child_name FROM routine_completions c JOIN routines r ON r.id=c.routine_id JOIN users u ON u.id=r.child_id WHERE r.household_id=? ORDER BY c.completed_on DESC,c.completed_at DESC LIMIT 100`).all(req.auth.household_id));
   });
-  app.post('/api/chores', requireAdult, (req, res) => {
-    const title = text(req.body.title), due = text(req.body.dueOn, 10), recurrence = req.body.recurrence;
-    if (!title || !/^\d{4}-\d{2}-\d{2}$/.test(due || '') || !['once', 'daily', 'weekly'].includes(recurrence)) return res.status(400).json({ error: 'Title, due date, and recurrence are required.' });
-    const assignee = req.body.assigneeId == null ? null : db.prepare('SELECT id FROM users WHERE id=? AND household_id=?').get(req.body.assigneeId, req.auth.household_id)?.id;
-    db.prepare('INSERT INTO chores(household_id,assignee_id,title,recurrence,due_on) VALUES (?,?,?,?,?)').run(req.auth.household_id, assignee, title, recurrence, due); emit(req.auth.household_id, 'tasks'); res.status(201).json({ ok: true });
+  app.get('/api/chores', requireAdult, (req, res) => res.json(db.prepare('SELECT c.id,c.title,c.days,c.recurrence,c.sort_order,u.name assignee_name FROM chores c LEFT JOIN users u ON u.id=c.assignee_id WHERE c.household_id=? AND c.active=1 ORDER BY c.sort_order,c.id').all(req.auth.household_id)));
+  app.put('/api/chore-order', requireAdult, (req, res) => {
+    if (!reorder(db, 'chores', req.auth.household_id, req.body.ids || [])) return res.status(400).json({ error: 'The chore order must include every chore once.' });
+    emit(req.auth.household_id, 'tasks'); res.json({ ok: true });
   });
+  app.post('/api/chores', requireAdult, (req, res) => {
+    const title = text(req.body.title), days = req.body.recurrence === 'once' ? null : parseDays(req.body.days);
+    if (!title || (req.body.recurrence !== 'once' && !days)) return res.status(400).json({ error: 'A title and valid days are required.' });
+    const assignee = req.body.assigneeId == null ? null : db.prepare('SELECT id FROM users WHERE id=? AND household_id=?').get(req.body.assigneeId, req.auth.household_id)?.id;
+    const recurrence = days?.split(',').length === 1 ? 'weekly' : days ? 'daily' : 'once';
+    const order = db.prepare('SELECT COALESCE(MAX(sort_order),-1)+1 next FROM chores WHERE household_id=?').get(req.auth.household_id).next;
+    db.prepare('INSERT INTO chores(household_id,assignee_id,title,recurrence,due_on,days,sort_order) VALUES (?,?,?,?,?,?,?)').run(req.auth.household_id, assignee, title, recurrence, '0000-01-01', days, order); emit(req.auth.household_id, 'tasks'); res.status(201).json({ ok: true });
+  });
+  app.patch('/api/chores/:id', requireAdult, (req, res) => {
+    const chore = db.prepare('SELECT * FROM chores WHERE id=? AND household_id=?').get(req.params.id, req.auth.household_id);
+    const title = text(req.body.title) || chore?.title, days = req.body.recurrence === 'once' ? null : req.body.days === undefined ? chore?.days : parseDays(req.body.days);
+    if (!chore) return res.status(404).json({ error: 'Chore not found.' });
+    if (!title || (req.body.recurrence !== 'once' && !days)) return res.status(400).json({ error: 'A title and valid days are required.' });
+    const recurrence = days?.split(',').length === 1 ? 'weekly' : days ? 'daily' : 'once';
+    db.prepare('UPDATE chores SET title=?,recurrence=?,due_on=?,days=? WHERE id=?').run(title, recurrence, '0000-01-01', days, chore.id); emit(req.auth.household_id, 'tasks'); res.json({ ok: true });
+  });
+  app.delete('/api/chores/:id', requireAdult, (req, res) => { db.prepare('DELETE FROM chores WHERE id=? AND household_id=?').run(req.params.id, req.auth.household_id); emit(req.auth.household_id, 'tasks'); res.status(204).end(); });
   app.post('/api/chores/:id/toggle', (req, res) => {
     const chore = db.prepare('SELECT c.*,h.timezone FROM chores c JOIN households h ON h.id=c.household_id WHERE c.id=? AND c.household_id=?').get(req.params.id, req.auth.household_id);
     if (!chore) return res.status(404).json({ error: 'Chore not found.' });
@@ -181,6 +220,13 @@ export function createApp(db, dependencies = {}) {
     if (!title || !starts || Number.isNaN(Date.parse(starts))) return res.status(400).json({ error: 'Title and time are required.' });
     db.prepare('INSERT INTO local_reminders(household_id,title,starts_at,created_by) VALUES (?,?,?,?)').run(req.auth.household_id, title, starts, req.auth.user_id); emit(req.auth.household_id, 'calendar'); res.status(201).json({ ok: true });
   });
+  app.patch('/api/reminders/:id', requireUser, (req, res) => {
+    const reminder = db.prepare('SELECT * FROM local_reminders WHERE id=? AND household_id=?').get(req.params.id, req.auth.household_id);
+    const title = text(req.body.title) || reminder?.title, starts = text(req.body.startsAt, 40) || reminder?.starts_at;
+    if (!reminder) return res.status(404).json({ error: 'Reminder not found.' });
+    if (!title || Number.isNaN(Date.parse(starts))) return res.status(400).json({ error: 'Title and time are required.' });
+    db.prepare('UPDATE local_reminders SET title=?,starts_at=? WHERE id=?').run(title, starts, reminder.id); emit(req.auth.household_id, 'calendar'); res.json({ ok: true });
+  });
   app.delete('/api/reminders/:id', requireUser, (req, res) => { db.prepare('DELETE FROM local_reminders WHERE id=? AND household_id=?').run(req.params.id, req.auth.household_id); emit(req.auth.household_id, 'calendar'); res.status(204).end(); });
 
   app.get('/api/calendar/feeds', requireAdult, (req, res) => res.json(db.prepare('SELECT id,name,color,enabled,created_at,updated_at,1 configured FROM calendar_feeds WHERE household_id=? ORDER BY name').all(req.auth.household_id)));
@@ -193,8 +239,15 @@ export function createApp(db, dependencies = {}) {
     emit(req.auth.household_id, 'calendar'); res.status(201).json({ id: Number(result.lastInsertRowid), name, color, enabled: 1, configured: 1 });
   });
   app.patch('/api/calendar/feeds/:id', requireAdult, (req, res) => {
-    const result = db.prepare('UPDATE calendar_feeds SET enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND household_id=?').run(+!!req.body.enabled, req.params.id, req.auth.household_id);
-    if (!result.changes) return res.status(404).json({ error: 'Calendar feed not found.' });
+    const feed = db.prepare('SELECT * FROM calendar_feeds WHERE id=? AND household_id=?').get(req.params.id, req.auth.household_id);
+    if (!feed) return res.status(404).json({ error: 'Calendar feed not found.' });
+    const name = req.body.name === undefined ? feed.name : text(req.body.name, 80);
+    const color = req.body.color === undefined ? feed.color : text(req.body.color, 7);
+    const validation = req.body.url ? validateFeedUrl(req.body.url) : { valid: true, url: feed.url };
+    if (!name) return res.status(400).json({ error: 'Calendar name is required and must be 80 characters or fewer.' });
+    if (!/^#[0-9a-f]{6}$/i.test(color || '')) return res.status(400).json({ error: 'Calendar color must be a six-digit hex color.' });
+    if (!validation.valid) return res.status(400).json({ error: validation.error });
+    db.prepare('UPDATE calendar_feeds SET name=?,url=?,color=?,enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(name, validation.url, color, req.body.enabled === undefined ? feed.enabled : +!!req.body.enabled, feed.id);
     emit(req.auth.household_id, 'calendar'); res.json({ ok: true });
   });
   app.delete('/api/calendar/feeds/:id', requireAdult, (req, res) => {

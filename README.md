@@ -30,7 +30,7 @@ npm test
 
 Deployment automation can create a 10-minute code for the deployment's household with `npm run pairing-code`. The command prints only the code. In Docker, run `docker compose exec family-hub npm run --silent pairing-code` to suppress npm's command banner.
 
-The wall display gets a separate opaque device session. It can read the dashboard and calendar, and toggle today's routines and chores. It cannot change groceries, reminders, trips, members, budgets, plans, calendar feeds, or account settings. It never receives calendar feed URLs.
+The wall display gets a separate opaque device session. It can read the dashboard and calendar, and toggle today's routines and chores. It cannot change reminders, members, plans, calendar feeds, task order, or account settings. It never receives calendar feed URLs.
 
 ## Calendar feeds
 
@@ -89,7 +89,6 @@ Preview captures are in `artifacts/wall.png` and `artifacts/phone.png`. They use
 ## First-version limits
 
 - Calendar feeds are read-only. The calendar provider remains the source of truth.
-- Grocery spending is manual. There is no bank or retailer integration.
 - The app supports one household per deployment.
 - CI is configured; automatic deployment waits for a named Git host and deployment target.
 
