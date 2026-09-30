@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=Family Hub desktop
+Exec=/usr/local/bin/family-hub-labwc

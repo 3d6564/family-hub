@@ -24,6 +24,17 @@ export function parseDays(value) {
   return values.size ? [...values].sort().join(',') : null;
 }
 
+const clockPattern = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/** Return whether a daily dim window is active, including windows that cross midnight. */
+export function isDimTime(start, end, date, timezone = 'UTC') {
+  if (!clockPattern.test(start) || !clockPattern.test(end) || start === end) return false;
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date);
+  const hour = parts.find((part) => part.type === 'hour').value;
+  const now = `${hour === '24' ? '00' : hour}:${parts.find((part) => part.type === 'minute').value}`;
+  return start < end ? now >= start && now < end : now >= start || now < end;
+}
+
 /** Return the completion key. Scheduled chores reset on each local day. */
 export function chorePeriod(recurrence, date, timezone = 'UTC') {
   if (recurrence === 'once') return 'once';

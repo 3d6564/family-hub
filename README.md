@@ -12,7 +12,9 @@ Requirements: Node.js 22+, npm, and build tools supported by `better-sqlite3` if
 4. Run `npm start`.
 5. Open `http://localhost:3000`.
 
-No sample household records are created. Add children, routines, chores, budgets, plans, reminders, and calendar feeds after sign-in. Create the first two adults with the local bootstrap command. Adults can add more household members in Settings.
+No sample household records are created. Add children, routines, chores, plans, reminders, and calendar feeds after sign-in. Create the first two adults with the local bootstrap command. Adults can add more household members in Settings.
+
+Routines are personal habits or school steps, such as brushing teeth or practicing spelling. Each assigned child checks off their own routine for the day. Chores are household jobs, such as setting the table or sorting recycling; they can be assigned to someone or left for anyone. A scheduled chore stays until it is marked done, and that completion is kept for the day. Timed calendar events show their time next to the title. Settings can change the color palette. The header button switches light or dark mode on each display, and the dim schedule forces dark mode during its hours. Each palette works in either mode.
 
 Run checks with:
 

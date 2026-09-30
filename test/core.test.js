@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDatabase } from '../src/db.js';
-import { chorePeriod, isChoreDue, monthKey, parseDays } from '../src/domain.js';
+import { chorePeriod, isChoreDue, isDimTime, monthKey, parseDays } from '../src/domain.js';
 import { assertSafeRemoteUrl, parseFeedEvents, validateFeedUrl } from '../src/ical.js';
 import { createApp } from '../src/app.js';
 import { createPairingCode, createSession, digest, hashPassword, verifyPassword } from '../src/auth.js';
@@ -11,6 +11,13 @@ function household(db, name) { return Number(db.prepare('INSERT INTO households(
 
 test('month keys use the household timezone', () => {
   assert.equal(monthKey(new Date('2026-10-01T00:30:00Z'), 'America/Los_Angeles'), '2026-09');
+});
+
+test('display dim follows the daily window, including overnight', () => {
+  assert.equal(isDimTime('21:00', '07:00', new Date('2026-09-29T02:30:00Z'), 'UTC'), true);
+  assert.equal(isDimTime('21:00', '07:00', new Date('2026-09-29T12:00:00Z'), 'UTC'), false);
+  assert.equal(isDimTime('09:00', '17:00', new Date('2026-09-29T16:59:00Z'), 'UTC'), true);
+  assert.equal(isDimTime('09:00', '09:00', new Date('2026-09-29T09:00:00Z'), 'UTC'), false);
 });
 
 test('recurring chore keys reset daily and weekly', () => {
@@ -51,6 +58,27 @@ test('a completed one-time chore leaves the list and yesterday does not count to
   assert.equal(body.chores.some((chore) => chore.id === once), false);
   assert.equal(body.chores.find((chore) => chore.id === daily)?.completed, false);
   assert.equal(db.prepare('SELECT active FROM chores WHERE id=?').get(once).active, 0);
+});
+
+test('one routine can be completed separately by each assigned child', async (t) => {
+  const previous = process.env.APP_ORIGIN; process.env.APP_ORIGIN = 'http://127.0.0.1';
+  t.after(() => previous === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previous);
+  const db = database(), home = household(db, 'Home'), password = await hashPassword('a secure password');
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'adult-routine@example.test', 'Adult', password).lastInsertRowid);
+  const first = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'child')").run(home, 'one@example.test', 'Sydney', password).lastInsertRowid);
+  const second = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'child')").run(home, 'two@example.test', 'Alex', password).lastInsertRowid);
+  const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); });
+  await new Promise((resolve) => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`, headers = { cookie: `family_user_session=${createSession(db, { householdId: home, userId: adult })}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' };
+  assert.equal((await fetch(`${base}/api/routines`, { method: 'POST', headers, body: JSON.stringify({ title: 'Brush teeth', days: '0-6', period: 'morning', childIds: [first, second] }) })).status, 201);
+  const dashboard = await (await fetch(`${base}/api/dashboard`, { headers })).json();
+  const rows = dashboard.routines.filter((routine) => routine.title === 'Brush teeth');
+  assert.deepEqual(rows.map((routine) => routine.child_name).sort(), ['Alex', 'Sydney']);
+  assert.equal(rows[0].period, 'morning');
+  assert.equal((await fetch(`${base}/api/routines/${rows[0].id}/toggle`, { method: 'POST', headers, body: JSON.stringify({ childId: first }) })).status, 200);
+  const after = await (await fetch(`${base}/api/dashboard`, { headers })).json();
+  assert.equal(after.routines.find((routine) => routine.child_id === first).completed, 1);
+  assert.equal(after.routines.find((routine) => routine.child_id === second).completed, 0);
 });
 
 test('day patterns accept names, numbers, and ranges', () => {
@@ -102,6 +130,12 @@ test('children can be added without login details and adults cannot', async (t) 
   assert.equal((await fetch(route, { method: 'POST', headers, body: JSON.stringify({ name: 'Adult two', role: 'adult' }) })).status, 400);
   assert.equal((await fetch(`${base}/api/household/week-start`, { method: 'PUT', headers, body: JSON.stringify({ weekStartsOn: 0 }) })).status, 200);
   assert.equal(db.prepare('SELECT week_starts_on FROM households WHERE id=?').get(home).week_starts_on, 0);
+  assert.equal((await fetch(`${base}/api/household/dim`, { method: 'PUT', headers, body: JSON.stringify({ dimEnabled: true, dimStart: '21:00', dimEnd: '07:00' }) })).status, 200);
+  assert.equal(db.prepare('SELECT dim_enabled FROM households WHERE id=?').get(home).dim_enabled, 1);
+  assert.equal((await fetch(`${base}/api/household/dim`, { method: 'PUT', headers, body: JSON.stringify({ dimEnabled: true, dimStart: '21:00', dimEnd: '21:00' }) })).status, 400);
+  assert.equal((await fetch(`${base}/api/household/theme`, { method: 'PUT', headers, body: JSON.stringify({ theme: 'slate' }) })).status, 200);
+  assert.equal(db.prepare('SELECT theme FROM households WHERE id=?').get(home).theme, 'slate');
+  assert.equal((await fetch(`${base}/api/household/theme`, { method: 'PUT', headers, body: JSON.stringify({ theme: 'purple' }) })).status, 400);
 });
 
 test('adults can reorder every routine in their household', async (t) => {
@@ -195,7 +229,8 @@ test('completion history is adult-only and scoped to the household', async (t) =
   const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(first, 'adult@example.test', 'Adult', password).lastInsertRowid);
   const other = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'child')").run(second, 'child@example.test', 'Other child', password).lastInsertRowid);
   const routine = Number(db.prepare('INSERT INTO routines(household_id,child_id,title) VALUES (?,?,?)').run(second, other, 'Private routine').lastInsertRowid);
-  db.prepare('INSERT INTO routine_completions(routine_id,completed_on) VALUES (?,?)').run(routine, '2026-09-28');
+  db.prepare('INSERT INTO routine_assignees(routine_id,child_id) VALUES (?,?)').run(routine, other);
+  db.prepare('INSERT INTO routine_completions(routine_id,child_id,completed_on) VALUES (?,?,?)').run(routine, other, '2026-09-28');
   process.env.APP_ORIGIN = 'http://127.0.0.1'; const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); });
   await new Promise((resolve) => server.once('listening', resolve)); const base = `http://127.0.0.1:${server.address().port}`;
   const token = createSession(db, { householdId: first, userId: adult });

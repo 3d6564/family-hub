@@ -55,7 +55,7 @@ export function createApp(db, dependencies = {}) {
   const auth = authenticate(db);
   app.use('/api', auth, csrf);
   app.get('/api/me', (req, res) => {
-    const household = db.prepare('SELECT id,name,timezone,week_starts_on weekStartsOn FROM households WHERE id=?').get(req.auth.household_id);
+    const household = db.prepare('SELECT id,name,timezone,week_starts_on weekStartsOn,dim_enabled dimEnabled,dim_start dimStart,dim_end dimEnd,theme FROM households WHERE id=?').get(req.auth.household_id);
     res.json({ household, user: req.auth.user_id ? { id: req.auth.user_id, name: req.auth.name, email: req.auth.email, role: req.auth.role } : null, device: req.auth.kind === 'device' ? req.auth.device_name : null });
   });
   app.get('/api/version', (req, res) => res.json({ version: deploymentVersion }));
@@ -75,14 +75,15 @@ export function createApp(db, dependencies = {}) {
     const h = req.auth.household_id;
     const household = db.prepare('SELECT timezone FROM households WHERE id=?').get(h);
     const today = localDate(new Date(), household.timezone);
-    const routines = db.prepare(`SELECT r.*,u.name child_name,EXISTS(SELECT 1 FROM routine_completions c WHERE c.routine_id=r.id AND c.completed_on=?) completed
-      FROM routines r JOIN users u ON u.id=r.child_id WHERE r.household_id=? AND r.active=1 ORDER BY r.sort_order,r.id`).all(today, h).filter((r) => r.days.split(',').includes(String(new Date(`${today}T12:00:00Z`).getUTCDay())));
+    const routines = db.prepare(`SELECT r.id,r.title,r.days,r.period,r.sort_order,a.child_id,u.name child_name,EXISTS(SELECT 1 FROM routine_completions c WHERE c.routine_id=r.id AND c.child_id=a.child_id AND c.completed_on=?) completed
+      FROM routines r JOIN routine_assignees a ON a.routine_id=r.id JOIN users u ON u.id=a.child_id WHERE r.household_id=? AND r.active=1 ORDER BY r.sort_order,r.id,u.name`).all(today, h).filter((r) => r.days.split(',').includes(String(new Date(`${today}T12:00:00Z`).getUTCDay())));
     const chores = db.prepare('SELECT c.*,u.name assignee_name FROM chores c LEFT JOIN users u ON u.id=c.assignee_id WHERE c.household_id=? AND c.active=1 ORDER BY c.sort_order,c.id').all(h)
       .filter((c) => isChoreDue(c, new Date(), household.timezone))
       .map((c) => ({ ...c, completed: !!db.prepare('SELECT 1 FROM chore_completions WHERE chore_id=? AND period_key=?').get(c.id, chorePeriod(c.recurrence, new Date(), household.timezone)) }))
       .filter((c) => c.recurrence !== 'once' || !c.completed);
     const plans = db.prepare('SELECT * FROM family_targets WHERE household_id=? ORDER BY sort_order,id').all(h);
-    res.json({ today, routines, chores, plans });
+    const dim = db.prepare('SELECT dim_enabled enabled,dim_start start,dim_end end,timezone,theme FROM households WHERE id=?').get(h);
+    res.json({ today, routines, chores, plans, dim });
   });
 
   app.get('/api/members', requireAdult, (req, res) => res.json(db.prepare("SELECT id,name,role,email NOT LIKE 'child-%@family-hub.invalid' has_email FROM users WHERE household_id=? ORDER BY role,name").all(req.auth.household_id)));
@@ -138,38 +139,82 @@ export function createApp(db, dependencies = {}) {
     db.prepare('UPDATE households SET week_starts_on=? WHERE id=?').run(weekStartsOn, req.auth.household_id);
     emit(req.auth.household_id, 'calendar'); res.json({ weekStartsOn });
   });
+  app.put('/api/household/dim', requireAdult, (req, res) => {
+    const dimStart = text(req.body.dimStart, 5), dimEnd = text(req.body.dimEnd, 5);
+    if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(dimStart || '') || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(dimEnd || '') || dimStart === dimEnd) return res.status(400).json({ error: 'Choose a start and end time, using different times.' });
+    const dimEnabled = req.body.dimEnabled ? 1 : 0;
+    db.prepare('UPDATE households SET dim_enabled=?,dim_start=?,dim_end=? WHERE id=?').run(dimEnabled, dimStart, dimEnd, req.auth.household_id);
+    emit(req.auth.household_id, 'dashboard'); res.json({ dimEnabled, dimStart, dimEnd });
+  });
+  app.put('/api/household/theme', requireAdult, (req, res) => {
+    const theme = text(req.body.theme, 12);
+    if (!['green', 'slate', 'blue', 'warm'].includes(theme)) return res.status(400).json({ error: 'Choose Green, Slate, Blue, or Warm.' });
+    db.prepare('UPDATE households SET theme=? WHERE id=?').run(theme, req.auth.household_id);
+    emit(req.auth.household_id, 'dashboard'); res.json({ theme });
+  });
   app.get('/api/devices', requireAdult, (req, res) => res.json(db.prepare("SELECT id,device_name,created_at,expires_at FROM sessions WHERE household_id=? AND kind='device' ORDER BY created_at DESC").all(req.auth.household_id)));
   app.delete('/api/devices/:id', requireAdult, (req, res) => { db.prepare("DELETE FROM sessions WHERE id=? AND household_id=? AND kind='device'").run(req.params.id, req.auth.household_id); res.status(204).end(); });
 
-  app.get('/api/routines', requireAdult, (req, res) => res.json(db.prepare('SELECT r.id,r.title,r.days,r.sort_order,u.name child_name FROM routines r JOIN users u ON u.id=r.child_id WHERE r.household_id=? AND r.active=1 ORDER BY r.sort_order,r.id').all(req.auth.household_id)));
+  function childIdsFor(householdId, ids) {
+    const requested = [...new Set((Array.isArray(ids) ? ids : [ids]).map(Number).filter(Boolean))];
+    if (!requested.length) return [];
+    const found = db.prepare(`SELECT id FROM users WHERE household_id=? AND role='child' AND id IN (${requested.map(() => '?').join(',')})`).all(householdId, ...requested).map((row) => row.id);
+    return found.length === requested.length ? found : [];
+  }
+  function saveRoutineChildren(routineId, childIds) {
+    db.prepare('DELETE FROM routine_assignees WHERE routine_id=?').run(routineId);
+    const insert = db.prepare('INSERT INTO routine_assignees(routine_id,child_id) VALUES (?,?)');
+    childIds.forEach((childId) => insert.run(routineId, childId));
+    db.prepare('UPDATE routines SET child_id=? WHERE id=?').run(childIds[0], routineId);
+  }
+  app.get('/api/routines', requireAdult, (req, res) => {
+    const rows = db.prepare(`SELECT r.id,r.title,r.days,r.period,r.sort_order,a.child_id,u.name child_name FROM routines r JOIN routine_assignees a ON a.routine_id=r.id JOIN users u ON u.id=a.child_id WHERE r.household_id=? AND r.active=1 ORDER BY r.sort_order,r.id,u.name`).all(req.auth.household_id);
+    const grouped = new Map();
+    for (const row of rows) {
+      const item = grouped.get(row.id) || { id: row.id, title: row.title, days: row.days, period: row.period, sort_order: row.sort_order, child_ids: [], child_names: [] };
+      item.child_ids.push(row.child_id); item.child_names.push(row.child_name); grouped.set(row.id, item);
+    }
+    res.json([...grouped.values()].map((item) => ({ ...item, child_names: item.child_names.join(', ') })));
+  });
   app.put('/api/routine-order', requireAdult, (req, res) => {
     if (!reorder(db, 'routines', req.auth.household_id, req.body.ids || [])) return res.status(400).json({ error: 'The routine order must include every routine once.' });
     emit(req.auth.household_id, 'tasks'); res.json({ ok: true });
   });
   app.post('/api/routines', requireAdult, (req, res) => {
-    const title = text(req.body.title, 40), days = parseDays(req.body.days), child = db.prepare("SELECT id FROM users WHERE id=? AND household_id=? AND role='child'").get(req.body.childId, req.auth.household_id);
-    if (!title || !child || !days) return res.status(400).json({ error: 'Child, a title of 40 characters or fewer, and valid days are required.' });
+    const periods = ['morning', 'after_school', 'bedtime'];
+    const title = text(req.body.title, 40), days = parseDays(req.body.days), period = req.body.period || 'morning', childIds = childIdsFor(req.auth.household_id, req.body.childIds || req.body.childId);
+    if (!title || !childIds.length || !days || !periods.includes(period)) return res.status(400).json({ error: 'At least one child, a title of 40 characters or fewer, valid days, and a time of day are required.' });
     const order = db.prepare('SELECT COALESCE(MAX(sort_order),-1)+1 next FROM routines WHERE household_id=?').get(req.auth.household_id).next;
-    db.prepare('INSERT INTO routines(household_id,child_id,title,days,sort_order) VALUES (?,?,?,?,?)').run(req.auth.household_id, child.id, title, days, order); emit(req.auth.household_id, 'tasks'); res.status(201).json({ ok: true });
+    const result = db.prepare('INSERT INTO routines(household_id,child_id,title,days,period,sort_order) VALUES (?,?,?,?,?,?)').run(req.auth.household_id, childIds[0], title, days, period, order);
+    saveRoutineChildren(Number(result.lastInsertRowid), childIds); emit(req.auth.household_id, 'tasks'); res.status(201).json({ ok: true });
   });
   app.patch('/api/routines/:id', requireAdult, (req, res) => {
     const routine = db.prepare('SELECT * FROM routines WHERE id=? AND household_id=?').get(req.params.id, req.auth.household_id);
-    const title = req.body.title === undefined ? routine?.title : text(req.body.title, 40), days = req.body.days === undefined ? routine?.days : parseDays(req.body.days);
+    const periods = ['morning', 'after_school', 'bedtime'];
+    const title = req.body.title === undefined ? routine?.title : text(req.body.title, 40), days = req.body.days === undefined ? routine?.days : parseDays(req.body.days), period = req.body.period === undefined ? routine?.period : req.body.period;
     if (!routine) return res.status(404).json({ error: 'Routine not found.' });
-    if (!title || !days) return res.status(400).json({ error: 'A title of 40 characters or fewer and valid days are required.' });
-    db.prepare('UPDATE routines SET title=?,days=? WHERE id=?').run(title, days, routine.id); emit(req.auth.household_id, 'tasks'); res.json({ ok: true });
+    if (!title || !days || !periods.includes(period)) return res.status(400).json({ error: 'A title of 40 characters or fewer, valid days, and a time of day are required.' });
+    const childIds = req.body.childIds === undefined && req.body.childId === undefined ? null : childIdsFor(req.auth.household_id, req.body.childIds || req.body.childId);
+    if (childIds && !childIds.length) return res.status(400).json({ error: 'Choose at least one child.' });
+    db.prepare('UPDATE routines SET title=?,days=?,period=? WHERE id=?').run(title, days, period, routine.id);
+    if (childIds) saveRoutineChildren(routine.id, childIds);
+    emit(req.auth.household_id, 'tasks'); res.json({ ok: true });
   });
   app.delete('/api/routines/:id', requireAdult, (req, res) => { db.prepare('DELETE FROM routines WHERE id=? AND household_id=?').run(req.params.id, req.auth.household_id); emit(req.auth.household_id, 'tasks'); res.status(204).end(); });
   app.post('/api/routines/:id/toggle', (req, res) => {
     const routine = db.prepare('SELECT r.*,h.timezone FROM routines r JOIN households h ON h.id=r.household_id WHERE r.id=? AND r.household_id=?').get(req.params.id, req.auth.household_id);
     if (!routine) return res.status(404).json({ error: 'Routine not found.' });
-    const date = localDate(new Date(), routine.timezone), existing = db.prepare('SELECT 1 FROM routine_completions WHERE routine_id=? AND completed_on=?').get(routine.id, date);
+    const assignees = db.prepare('SELECT child_id FROM routine_assignees WHERE routine_id=?').all(routine.id).map((row) => row.child_id);
+    if (!assignees.length) assignees.push(routine.child_id);
+    const childId = Number(req.body.childId) || (assignees.length === 1 ? assignees[0] : 0);
+    if (!assignees.includes(childId)) return res.status(400).json({ error: 'Choose one assigned child.' });
+    const date = localDate(new Date(), routine.timezone), existing = db.prepare('SELECT 1 FROM routine_completions WHERE routine_id=? AND child_id=? AND completed_on=?').get(routine.id, childId, date);
     if (req.auth.kind === 'device' && !routine.days.split(',').includes(String(new Date(`${date}T12:00:00Z`).getUTCDay()))) return res.status(403).json({ error: 'This routine is not due today.' });
-    if (existing) db.prepare('DELETE FROM routine_completions WHERE routine_id=? AND completed_on=?').run(routine.id, date); else db.prepare('INSERT INTO routine_completions(routine_id,completed_on) VALUES (?,?)').run(routine.id, date);
+    if (existing) db.prepare('DELETE FROM routine_completions WHERE routine_id=? AND child_id=? AND completed_on=?').run(routine.id, childId, date); else db.prepare('INSERT INTO routine_completions(routine_id,child_id,completed_on) VALUES (?,?,?)').run(routine.id, childId, date);
     emit(req.auth.household_id, 'tasks'); res.json({ completed: !existing });
   });
   app.get('/api/routines/history', requireAdult, (req, res) => {
-    res.json(db.prepare(`SELECT c.completed_on,c.completed_at,r.title,u.name child_name FROM routine_completions c JOIN routines r ON r.id=c.routine_id JOIN users u ON u.id=r.child_id WHERE r.household_id=? ORDER BY c.completed_on DESC,c.completed_at DESC LIMIT 2000`).all(req.auth.household_id));
+    res.json(db.prepare(`SELECT c.completed_on,c.completed_at,r.title,u.name child_name FROM routine_completions c JOIN routines r ON r.id=c.routine_id JOIN users u ON u.id=c.child_id WHERE r.household_id=? ORDER BY c.completed_on DESC,c.completed_at DESC LIMIT 2000`).all(req.auth.household_id));
   });
   app.get('/api/chores', requireAdult, (req, res) => res.json(db.prepare('SELECT c.id,c.title,c.days,c.recurrence,c.sort_order,u.name assignee_name FROM chores c LEFT JOIN users u ON u.id=c.assignee_id WHERE c.household_id=? AND c.active=1 ORDER BY c.sort_order,c.id').all(req.auth.household_id)));
   app.put('/api/chore-order', requireAdult, (req, res) => {
@@ -281,7 +326,7 @@ export function createApp(db, dependencies = {}) {
     res.json({ events, errors });
   }));
 
-  app.use(express.static(publicDir, { etag: true, maxAge: '1h', setHeaders: (res, file) => { if (file.endsWith('service-worker.js')) res.set('Cache-Control', 'no-cache'); } }));
+  app.use(express.static(publicDir, { etag: true, maxAge: 0, setHeaders: (res) => { res.set('Cache-Control', 'no-cache'); } }));
   app.get('/{*path}', (req, res) => res.sendFile(path.join(publicDir, 'index.html')));
   app.use((error, req, res, next) => { console.error(error.message); if (!res.headersSent) res.status(error.status || 500).json({ error: error.status ? error.message : 'The request failed. Try again.' }); else next(error); });
   return app;

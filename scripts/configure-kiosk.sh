@@ -44,7 +44,7 @@ if grep -Fq "$marker" "$autostart"; then
 fi
 {
   printf '\n%s\n' "$marker"
-  printf '(sleep 5; chromium --ozone-platform=wayland --disable-gpu-rasterization --user-data-dir="$HOME/.config/family-hub-kiosk" --password-store=basic --kiosk --noerrdialogs --disable-session-crashed-bubble --disable-infobars --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 %q) &\n' "$url"
+  printf '(sleep 5; chromium_bin=/usr/lib/chromium/chromium; test -x "$chromium_bin" || chromium_bin=chromium; "$chromium_bin" --ozone-platform=wayland --disable-gpu-rasterization --use-angle=gles --disable-dev-shm-usage --user-data-dir="$HOME/.config/family-hub-kiosk" --password-store=basic --kiosk --noerrdialogs --disable-session-crashed-bubble --disable-infobars --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 %q) &\n' "$url"
   printf '%s\n' "$end_marker"
 } >>"$autostart"
 
