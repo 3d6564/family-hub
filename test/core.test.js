@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDatabase } from '../src/db.js';
+import { calendarGridWindow } from '../public/calendar-view.js';
 import { chorePeriod, isChoreDue, isDimTime, monthKey, parseDays } from '../src/domain.js';
 import { assertSafeRemoteUrl, parseFeedEvents, validateFeedUrl } from '../src/ical.js';
 import { createApp } from '../src/app.js';
@@ -11,6 +12,17 @@ function household(db, name) { return Number(db.prepare('INSERT INTO households(
 
 test('month keys use the household timezone', () => {
   assert.equal(monthKey(new Date('2026-10-01T00:30:00Z'), 'America/Los_Angeles'), '2026-09');
+});
+
+test('calendar rolls to the current week in the live month final week', () => {
+  const month = new Date(2026, 8, 1), mondayStart = calendarGridWindow(month, new Date(2026, 8, 30), 1);
+  assert.equal(mondayStart.rollingForward, true);
+  assert.equal(mondayStart.gridStart.toDateString(), new Date(2026, 8, 28).toDateString());
+  assert.equal(mondayStart.cellCount, 35);
+  const beforeFinalWeek = calendarGridWindow(month, new Date(2026, 8, 27), 1);
+  assert.equal(beforeFinalWeek.rollingForward, false);
+  assert.equal(beforeFinalWeek.gridStart.toDateString(), new Date(2026, 7, 31).toDateString());
+  assert.equal(calendarGridWindow(month, new Date(2026, 8, 30), 1, true).rollingForward, false);
 });
 
 test('display dim follows the daily window, including overnight', () => {
@@ -104,9 +116,14 @@ test('calendar feed CRUD is adult-only, household-scoped, and never returns URLs
   assert.equal((await fetch(route, { headers: { cookie: `family_user_session=${childToken}` } })).status, 403);
   let response = await fetch(route, { method: 'POST', headers, body: JSON.stringify({ name: 'Family', url: 'https://calendar.example.test/private.ics', color: '#4285f4' }) });
   assert.equal(response.status, 201); const created = await response.json(); assert.equal(JSON.stringify(created).includes('private.ics'), false);
+  response = await fetch(route, { method: 'POST', headers, body: JSON.stringify({ name: 'Work', url: 'https://calendar.example.test/work.ics', color: '#123456' }) });
+  assert.equal(response.status, 201); const second = await response.json();
   db.prepare("INSERT INTO calendar_feeds(household_id,name,url,color) VALUES (?,?,?,?)").run(otherHome, 'Other private', 'https://other.example/secret.ics', '#ffffff');
   const list = await (await fetch(route, { headers })).json();
-  assert.equal(list.length, 1); assert.equal(list[0].configured, 1); assert.equal(JSON.stringify(list).includes('private.ics'), false); assert.equal(JSON.stringify(list).includes('secret.ics'), false);
+  assert.equal(list.length, 2); assert.deepEqual(list.map((feed) => feed.id), [created.id, second.id]); assert.equal(list[0].configured, 1); assert.equal(JSON.stringify(list).includes('private.ics'), false); assert.equal(JSON.stringify(list).includes('secret.ics'), false);
+  assert.equal((await fetch(`${base}/api/calendar/feed-order`, { method: 'PUT', headers, body: JSON.stringify({ ids: [second.id, created.id] }) })).status, 200);
+  assert.deepEqual((await (await fetch(route, { headers })).json()).map((feed) => feed.id), [second.id, created.id]);
+  assert.equal((await fetch(`${base}/api/calendar/feed-order`, { method: 'PUT', headers, body: JSON.stringify({ ids: [created.id] }) })).status, 400);
   assert.equal((await fetch(`${route}/${created.id}`, { method: 'PATCH', headers, body: JSON.stringify({ enabled: false }) })).status, 200);
   response = await fetch(`${route}/${created.id}`, { method: 'PATCH', headers, body: JSON.stringify({ name: 'Updated family', url: 'https://calendar.example.test/updated.ics', color: '#123456' }) });
   assert.equal(response.status, 200); assert.deepEqual(db.prepare('SELECT name,url,color FROM calendar_feeds WHERE id=?').get(created.id), { name: 'Updated family', url: 'https://calendar.example.test/updated.ics', color: '#123456' });
@@ -130,6 +147,11 @@ test('children can be added without login details and adults cannot', async (t) 
   assert.equal((await fetch(route, { method: 'POST', headers, body: JSON.stringify({ name: 'Adult two', role: 'adult' }) })).status, 400);
   assert.equal((await fetch(`${base}/api/household/week-start`, { method: 'PUT', headers, body: JSON.stringify({ weekStartsOn: 0 }) })).status, 200);
   assert.equal(db.prepare('SELECT week_starts_on FROM households WHERE id=?').get(home).week_starts_on, 0);
+  assert.equal((await fetch(`${base}/api/household/display-title`, { method: 'PUT', headers, body: JSON.stringify({ displayTitle: 'Robinson Family' }) })).status, 200);
+  assert.equal(db.prepare('SELECT display_title FROM households WHERE id=?').get(home).display_title, 'Robinson Family');
+  assert.equal((await fetch(`${base}/api/household/display-title`, { method: 'PUT', headers, body: JSON.stringify({ displayTitle: 'x'.repeat(61) }) })).status, 400);
+  assert.equal((await fetch(`${base}/api/household/display-title`, { method: 'PUT', headers, body: JSON.stringify({ displayTitle: '' }) })).status, 200);
+  assert.equal(db.prepare('SELECT display_title FROM households WHERE id=?').get(home).display_title, null);
   assert.equal((await fetch(`${base}/api/household/dim`, { method: 'PUT', headers, body: JSON.stringify({ dimEnabled: true, dimStart: '21:00', dimEnd: '07:00' }) })).status, 200);
   assert.equal(db.prepare('SELECT dim_enabled FROM households WHERE id=?').get(home).dim_enabled, 1);
   assert.equal((await fetch(`${base}/api/household/dim`, { method: 'PUT', headers, body: JSON.stringify({ dimEnabled: true, dimStart: '21:00', dimEnd: '21:00' }) })).status, 400);
@@ -165,10 +187,15 @@ test('adults can edit routines, chores, and reminders in their household', async
   const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); }); await new Promise((resolve) => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`, headers = { cookie: `family_user_session=${createSession(db, { householdId: home, userId: adult })}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' };
   assert.equal((await fetch(`${base}/api/routines/${routine}`, { method: 'PATCH', headers, body: JSON.stringify({ title: 'New routine', days: '1,2,3' }) })).status, 200);
-  assert.equal((await fetch(`${base}/api/chores/${chore}`, { method: 'PATCH', headers, body: JSON.stringify({ title: 'New chore', recurrence: 'scheduled', days: 'sat' }) })).status, 200);
+  assert.equal((await fetch(`${base}/api/chores/${chore}`, { method: 'PATCH', headers, body: JSON.stringify({ title: 'New chore', recurrence: 'scheduled', days: 'sat', rewardAmount: 0.75, assigneeId: null }) })).status, 200);
   assert.equal((await fetch(`${base}/api/reminders/${reminder}`, { method: 'PATCH', headers, body: JSON.stringify({ title: 'New reminder', startsAt: '2026-09-29T12:00:00.000Z' }) })).status, 200);
   assert.equal(db.prepare('SELECT title FROM routines WHERE id=?').get(routine).title, 'New routine');
   assert.equal(db.prepare('SELECT recurrence FROM chores WHERE id=?').get(chore).recurrence, 'weekly');
+  assert.equal(db.prepare('SELECT reward_quarters FROM chores WHERE id=?').get(chore).reward_quarters, 3);
+  assert.equal(db.prepare('SELECT assignee_id FROM chores WHERE id=?').get(chore).assignee_id, null);
+  assert.equal((await fetch(`${base}/api/chores/${chore}`, { method: 'PATCH', headers, body: JSON.stringify({ rewardAmount: 0.10 }) })).status, 400);
+  assert.equal((await fetch(`${base}/api/chores`, { method: 'POST', headers, body: JSON.stringify({ title: 'Quarter chore', assigneeId: child, recurrence: 'scheduled', days: 'sat', rewardAmount: 0.25 }) })).status, 201);
+  assert.equal(db.prepare("SELECT reward_quarters FROM chores WHERE title='Quarter chore'").get().reward_quarters, 1);
   assert.equal(db.prepare('SELECT title FROM local_reminders WHERE id=?').get(reminder).title, 'New reminder');
 });
 
@@ -196,16 +223,20 @@ test('one feed failure does not hide local reminders or other feed events', asyn
   const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'events@example.test', 'Adult', password).lastInsertRowid);
   db.prepare("INSERT INTO calendar_feeds(household_id,name,url,color) VALUES (?,?,?,?)").run(home, 'Broken', 'https://broken.example/feed.ics', '#111111');
   db.prepare("INSERT INTO calendar_feeds(household_id,name,url,color) VALUES (?,?,?,?)").run(home, 'Working', 'https://working.example/feed.ics', '#222222');
+  db.prepare("INSERT INTO calendar_feeds(household_id,name,url,color) VALUES (?,?,?,?)").run(home, 'Also working', 'https://also.example/feed.ics', '#333333');
   db.prepare('INSERT INTO local_reminders(household_id,title,starts_at,created_by) VALUES (?,?,?,?)').run(home, 'Local', '2026-09-10T12:00:00.000Z', adult);
   const feedFetcher = async (feed) => {
     if (feed.name === 'Broken') throw new Error('invalid calendar data');
-    return [{ id: 'feed:event', title: 'Remote', start: { date: '2026-09-11' }, end: { date: '2026-09-12' }, color: feed.color, calendar: feed.name, source: 'ical' }];
+    const start = feed.name === 'Also working' ? '2026-09-11T18:00:00.000Z' : '2026-09-11T09:00:00.000Z';
+    return [{ id: 'feed:event', title: feed.name, start: { dateTime: start }, end: null, color: feed.color, calendar: feed.name, source: 'ical' }];
   };
   const token = createSession(db, { householdId: home, userId: adult }), server = createApp(db, { fetchFeedEvents: feedFetcher }).listen(0);
   t.after(() => { server.close(); db.close(); }); await new Promise((resolve) => server.once('listening', resolve));
-  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/calendar/events?from=2026-09-01T00:00:00.000Z&to=2026-10-01T00:00:00.000Z`, { headers: { cookie: `family_user_session=${token}` } });
+  const base = `http://127.0.0.1:${server.address().port}`, headers = { cookie: `family_user_session=${token}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' };
+  assert.equal((await fetch(`${base}/api/calendar/feed-order`, { method: 'PUT', headers, body: JSON.stringify({ ids: [1, 3, 2] }) })).status, 200);
+  const response = await fetch(`${base}/api/calendar/events?from=2026-09-01T00:00:00.000Z&to=2026-10-01T00:00:00.000Z`, { headers });
   const body = await response.json();
-  assert.deepEqual(body.events.map((event) => event.title), ['Local', 'Remote']);
+  assert.deepEqual(body.events.map((event) => event.title), ['Local', 'Also working', 'Working']);
   assert.deepEqual(body.errors, [{ feedId: 1, calendar: 'Broken', message: 'Could not load Broken: invalid calendar data' }]);
 });
 

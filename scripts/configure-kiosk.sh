@@ -6,6 +6,7 @@ config_dir=${XDG_CONFIG_HOME:-$HOME/.config}/labwc
 autostart=$config_dir/autostart
 rcxml=$config_dir/rc.xml
 pointer_profile='<libinput><device category="default"><accelProfile>flat</accelProfile></device></libinput>'
+screen_reader_block='<keyboard><keybind key="C-A-space"><action name="Execute" command="true" /></keybind></keyboard>'
 desktop_config_dir=${XDG_CONFIG_HOME:-$HOME/.config}
 keyring_override=$desktop_config_dir/autostart/gnome-keyring-secrets.desktop
 marker='# Family Hub kiosk'
@@ -19,6 +20,14 @@ elif ! grep -Fq '<accelProfile>flat</accelProfile>' "$rcxml"; then
   updated=$(mktemp)
   while IFS= read -r entry || [[ -n $entry ]]; do
     [[ $entry == '</openbox_config>' ]] && printf '%s\n' "$pointer_profile" >>"$updated"
+    printf '%s\n' "$entry" >>"$updated"
+  done <"$rcxml"
+  mv "$updated" "$rcxml"
+fi
+if ! grep -Fq 'key="C-A-space"' "$rcxml"; then
+  updated=$(mktemp)
+  while IFS= read -r entry || [[ -n $entry ]]; do
+    [[ $entry == '</openbox_config>' ]] && printf '%s\n' "$screen_reader_block" >>"$updated"
     printf '%s\n' "$entry" >>"$updated"
   done <"$rcxml"
   mv "$updated" "$rcxml"

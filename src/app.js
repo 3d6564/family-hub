@@ -9,6 +9,12 @@ import { fetchFeedEvents, validateFeedUrl } from './ical.js';
 const publicDir = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'public');
 const clients = new Map();
 const text = (value, max = 120) => typeof value === 'string' && value.trim() && value.trim().length <= max ? value.trim() : null;
+const rewardQuarters = (value) => {
+  if (value !== undefined && value !== null && value !== '' && !['number', 'string'].includes(typeof value)) return null;
+  const amount = value === undefined || value === null || value === '' ? 0 : Number(value);
+  const quarters = amount * 4;
+  return Number.isFinite(amount) && amount >= 0 && Number.isSafeInteger(quarters) ? quarters : null;
+};
 function reorder(db, table, householdId, ids) {
   const existing = db.prepare(`SELECT id FROM ${table} WHERE household_id=?`).all(householdId).map((row) => row.id);
   const requested = ids.map(Number);
@@ -55,7 +61,7 @@ export function createApp(db, dependencies = {}) {
   const auth = authenticate(db);
   app.use('/api', auth, csrf);
   app.get('/api/me', (req, res) => {
-    const household = db.prepare('SELECT id,name,timezone,week_starts_on weekStartsOn,dim_enabled dimEnabled,dim_start dimStart,dim_end dimEnd,theme FROM households WHERE id=?').get(req.auth.household_id);
+    const household = db.prepare('SELECT id,name,display_title displayTitle,timezone,week_starts_on weekStartsOn,dim_enabled dimEnabled,dim_start dimStart,dim_end dimEnd,theme FROM households WHERE id=?').get(req.auth.household_id);
     res.json({ household, user: req.auth.user_id ? { id: req.auth.user_id, name: req.auth.name, email: req.auth.email, role: req.auth.role } : null, device: req.auth.kind === 'device' ? req.auth.device_name : null });
   });
   app.get('/api/version', (req, res) => res.json({ version: deploymentVersion }));
@@ -82,7 +88,7 @@ export function createApp(db, dependencies = {}) {
       .map((c) => ({ ...c, completed: !!db.prepare('SELECT 1 FROM chore_completions WHERE chore_id=? AND period_key=?').get(c.id, chorePeriod(c.recurrence, new Date(), household.timezone)) }))
       .filter((c) => c.recurrence !== 'once' || !c.completed);
     const plans = db.prepare('SELECT * FROM family_targets WHERE household_id=? ORDER BY sort_order,id').all(h);
-    const dim = db.prepare('SELECT dim_enabled enabled,dim_start start,dim_end end,timezone,theme FROM households WHERE id=?').get(h);
+    const dim = db.prepare('SELECT dim_enabled enabled,dim_start start,dim_end end,timezone,theme,display_title displayTitle FROM households WHERE id=?').get(h);
     res.json({ today, routines, chores, plans, dim });
   });
 
@@ -138,6 +144,13 @@ export function createApp(db, dependencies = {}) {
     if (!Number.isInteger(weekStartsOn) || weekStartsOn < 0 || weekStartsOn > 6) return res.status(400).json({ error: 'Week start must be a day of the week.' });
     db.prepare('UPDATE households SET week_starts_on=? WHERE id=?').run(weekStartsOn, req.auth.household_id);
     emit(req.auth.household_id, 'calendar'); res.json({ weekStartsOn });
+  });
+  app.put('/api/household/display-title', requireAdult, (req, res) => {
+    if (req.body.displayTitle !== null && typeof req.body.displayTitle !== 'string') return res.status(400).json({ error: 'Enter a display title of 60 characters or fewer, or leave it blank.' });
+    const displayTitle = req.body.displayTitle?.trim() ? text(req.body.displayTitle, 60) : null;
+    if (req.body.displayTitle?.trim() && !displayTitle) return res.status(400).json({ error: 'Display title must be 60 characters or fewer.' });
+    db.prepare('UPDATE households SET display_title=? WHERE id=?').run(displayTitle, req.auth.household_id);
+    emit(req.auth.household_id, 'dashboard'); res.json({ displayTitle });
   });
   app.put('/api/household/dim', requireAdult, (req, res) => {
     const dimStart = text(req.body.dimStart, 5), dimEnd = text(req.body.dimEnd, 5);
@@ -216,26 +229,28 @@ export function createApp(db, dependencies = {}) {
   app.get('/api/routines/history', requireAdult, (req, res) => {
     res.json(db.prepare(`SELECT c.completed_on,c.completed_at,r.title,u.name child_name FROM routine_completions c JOIN routines r ON r.id=c.routine_id JOIN users u ON u.id=c.child_id WHERE r.household_id=? ORDER BY c.completed_on DESC,c.completed_at DESC LIMIT 2000`).all(req.auth.household_id));
   });
-  app.get('/api/chores', requireAdult, (req, res) => res.json(db.prepare('SELECT c.id,c.title,c.days,c.recurrence,c.sort_order,u.name assignee_name FROM chores c LEFT JOIN users u ON u.id=c.assignee_id WHERE c.household_id=? AND c.active=1 ORDER BY c.sort_order,c.id').all(req.auth.household_id)));
+  app.get('/api/chores', requireAdult, (req, res) => res.json(db.prepare('SELECT c.id,c.title,c.days,c.recurrence,c.sort_order,c.reward_quarters,c.assignee_id,u.name assignee_name FROM chores c LEFT JOIN users u ON u.id=c.assignee_id WHERE c.household_id=? AND c.active=1 ORDER BY c.sort_order,c.id').all(req.auth.household_id)));
   app.put('/api/chore-order', requireAdult, (req, res) => {
     if (!reorder(db, 'chores', req.auth.household_id, req.body.ids || [])) return res.status(400).json({ error: 'The chore order must include every chore once.' });
     emit(req.auth.household_id, 'tasks'); res.json({ ok: true });
   });
   app.post('/api/chores', requireAdult, (req, res) => {
-    const title = text(req.body.title, 40), days = req.body.recurrence === 'once' ? null : parseDays(req.body.days);
-    if (!title || (req.body.recurrence !== 'once' && !days)) return res.status(400).json({ error: 'A title of 40 characters or fewer and valid days are required.' });
+    const title = text(req.body.title, 40), days = req.body.recurrence === 'once' ? null : parseDays(req.body.days), reward = rewardQuarters(req.body.rewardAmount);
+    if (!title || (req.body.recurrence !== 'once' && !days) || reward === null) return res.status(400).json({ error: 'A title of 40 characters or fewer, valid days, and a reward in $0.25 steps are required.' });
     const assignee = req.body.assigneeId == null ? null : db.prepare('SELECT id FROM users WHERE id=? AND household_id=?').get(req.body.assigneeId, req.auth.household_id)?.id;
     const recurrence = days?.split(',').length === 1 ? 'weekly' : days ? 'daily' : 'once';
     const order = db.prepare('SELECT COALESCE(MAX(sort_order),-1)+1 next FROM chores WHERE household_id=?').get(req.auth.household_id).next;
-    db.prepare('INSERT INTO chores(household_id,assignee_id,title,recurrence,due_on,days,sort_order) VALUES (?,?,?,?,?,?,?)').run(req.auth.household_id, assignee, title, recurrence, '0000-01-01', days, order); emit(req.auth.household_id, 'tasks'); res.status(201).json({ ok: true });
+    db.prepare('INSERT INTO chores(household_id,assignee_id,title,recurrence,due_on,days,sort_order,reward_quarters) VALUES (?,?,?,?,?,?,?,?)').run(req.auth.household_id, assignee, title, recurrence, '0000-01-01', days, order, reward); emit(req.auth.household_id, 'tasks'); res.status(201).json({ ok: true });
   });
   app.patch('/api/chores/:id', requireAdult, (req, res) => {
     const chore = db.prepare('SELECT * FROM chores WHERE id=? AND household_id=?').get(req.params.id, req.auth.household_id);
-    const title = req.body.title === undefined ? chore?.title : text(req.body.title, 40), days = req.body.recurrence === 'once' ? null : req.body.days === undefined ? chore?.days : parseDays(req.body.days);
+    const title = req.body.title === undefined ? chore?.title : text(req.body.title, 40), days = req.body.recurrence === 'once' ? null : req.body.days === undefined ? chore?.days : parseDays(req.body.days), reward = req.body.rewardAmount === undefined ? chore?.reward_quarters : rewardQuarters(req.body.rewardAmount);
     if (!chore) return res.status(404).json({ error: 'Chore not found.' });
-    if (!title || (req.body.recurrence !== 'once' && !days)) return res.status(400).json({ error: 'A title of 40 characters or fewer and valid days are required.' });
+    if (!title || (req.body.recurrence !== 'once' && !days) || reward === null) return res.status(400).json({ error: 'A title of 40 characters or fewer, valid days, and a reward in $0.25 steps are required.' });
+    const assignee = req.body.assigneeId === undefined ? chore.assignee_id : req.body.assigneeId === '' || req.body.assigneeId === null ? null : db.prepare('SELECT id FROM users WHERE id=? AND household_id=?').get(req.body.assigneeId, req.auth.household_id)?.id;
+    if (assignee === undefined) return res.status(400).json({ error: 'Choose a household member or Anyone.' });
     const recurrence = days?.split(',').length === 1 ? 'weekly' : days ? 'daily' : 'once';
-    db.prepare('UPDATE chores SET title=?,recurrence=?,due_on=?,days=? WHERE id=?').run(title, recurrence, '0000-01-01', days, chore.id); emit(req.auth.household_id, 'tasks'); res.json({ ok: true });
+    db.prepare('UPDATE chores SET title=?,assignee_id=?,recurrence=?,due_on=?,days=?,reward_quarters=? WHERE id=?').run(title, assignee, recurrence, '0000-01-01', days, reward, chore.id); emit(req.auth.household_id, 'tasks'); res.json({ ok: true });
   });
   app.delete('/api/chores/:id', requireAdult, (req, res) => { db.prepare('DELETE FROM chores WHERE id=? AND household_id=?').run(req.params.id, req.auth.household_id); emit(req.auth.household_id, 'tasks'); res.status(204).end(); });
   app.post('/api/chores/:id/toggle', (req, res) => {
@@ -281,13 +296,14 @@ export function createApp(db, dependencies = {}) {
   });
   app.delete('/api/reminders/:id', requireUser, (req, res) => { db.prepare('DELETE FROM local_reminders WHERE id=? AND household_id=?').run(req.params.id, req.auth.household_id); emit(req.auth.household_id, 'calendar'); res.status(204).end(); });
 
-  app.get('/api/calendar/feeds', requireAdult, (req, res) => res.json(db.prepare('SELECT id,name,color,enabled,created_at,updated_at,1 configured FROM calendar_feeds WHERE household_id=? ORDER BY name').all(req.auth.household_id)));
+  app.get('/api/calendar/feeds', requireAdult, (req, res) => res.json(db.prepare('SELECT id,name,color,enabled,sort_order,created_at,updated_at,1 configured FROM calendar_feeds WHERE household_id=? ORDER BY sort_order,id').all(req.auth.household_id)));
   app.post('/api/calendar/feeds', requireAdult, (req, res) => {
     const name = text(req.body.name, 80), color = text(req.body.color, 7), validation = validateFeedUrl(req.body.url);
     if (!name) return res.status(400).json({ error: 'Calendar name is required and must be 80 characters or fewer.' });
     if (!/^#[0-9a-f]{6}$/i.test(color || '')) return res.status(400).json({ error: 'Calendar color must be a six-digit hex color.' });
     if (!validation.valid) return res.status(400).json({ error: validation.error });
-    const result = db.prepare('INSERT INTO calendar_feeds(household_id,name,url,color) VALUES (?,?,?,?)').run(req.auth.household_id, name, validation.url, color);
+    const order = db.prepare('SELECT COALESCE(MAX(sort_order),-1)+1 next FROM calendar_feeds WHERE household_id=?').get(req.auth.household_id).next;
+    const result = db.prepare('INSERT INTO calendar_feeds(household_id,name,url,color,sort_order) VALUES (?,?,?,?,?)').run(req.auth.household_id, name, validation.url, color, order);
     emit(req.auth.household_id, 'calendar'); res.status(201).json({ id: Number(result.lastInsertRowid), name, color, enabled: 1, configured: 1 });
   });
   app.patch('/api/calendar/feeds/:id', requireAdult, (req, res) => {
@@ -307,23 +323,28 @@ export function createApp(db, dependencies = {}) {
     if (!result.changes) return res.status(404).json({ error: 'Calendar feed not found.' });
     emit(req.auth.household_id, 'calendar'); res.status(204).end();
   });
+  app.put('/api/calendar/feed-order', requireAdult, (req, res) => {
+    if (!reorder(db, 'calendar_feeds', req.auth.household_id, req.body.ids || [])) return res.status(400).json({ error: 'The calendar order must include every calendar once.' });
+    emit(req.auth.household_id, 'calendar'); res.json({ ok: true });
+  });
   app.get('/api/calendar/events', asyncRoute(async (req, res) => {
     const timeMin = text(req.query.from, 40), timeMax = text(req.query.to, 40);
     if (!timeMin || !timeMax || Number.isNaN(Date.parse(timeMin)) || Number.isNaN(Date.parse(timeMax))) return res.status(400).json({ error: 'Valid from and to times are required.' });
     const from = new Date(timeMin), to = new Date(timeMax);
     if (from >= to || to - from > 62 * 86400000) return res.status(400).json({ error: 'Calendar range must be positive and no longer than 62 days.' });
-    const feeds = db.prepare('SELECT id,name,url,color FROM calendar_feeds WHERE household_id=? AND enabled=1').all(req.auth.household_id);
-    const events = db.prepare('SELECT id,title,starts_at FROM local_reminders WHERE household_id=? AND starts_at>=? AND starts_at<? ORDER BY starts_at').all(req.auth.household_id, timeMin, timeMax).map((event) => ({ id: `local:${event.id}`, title: event.title, start: { dateTime: event.starts_at }, end: null, color: null, calendar: 'Family Hub', source: 'local reminder' }));
+    const feeds = db.prepare('SELECT id,name,url,color,sort_order FROM calendar_feeds WHERE household_id=? AND enabled=1 ORDER BY sort_order,id').all(req.auth.household_id);
+    const events = db.prepare('SELECT id,title,starts_at FROM local_reminders WHERE household_id=? AND starts_at>=? AND starts_at<? ORDER BY starts_at').all(req.auth.household_id, timeMin, timeMax).map((event) => ({ event: { id: `local:${event.id}`, title: event.title, start: { dateTime: event.starts_at }, end: null, color: null, calendar: 'Family Hub', source: 'local reminder' }, order: -1 }));
     const errors = [];
     for (const feed of feeds) {
       try {
-        events.push(...await (dependencies.fetchFeedEvents || fetchFeedEvents)(feed, from, to));
+        const feedEvents = await (dependencies.fetchFeedEvents || fetchFeedEvents)(feed, from, to);
+        events.push(...feedEvents.map((event) => ({ event, order: feed.sort_order })));
       } catch (error) {
         errors.push({ feedId: feed.id, calendar: feed.name, message: `Could not load ${feed.name}: ${error.message}` });
       }
     }
-    events.sort((a, b) => (a.start.dateTime || a.start.date).localeCompare(b.start.dateTime || b.start.date));
-    res.json({ events, errors });
+    events.sort((a, b) => a.order - b.order || (a.event.start.dateTime || a.event.start.date).localeCompare(b.event.start.dateTime || b.event.start.date));
+    res.json({ events: events.map(({ event }) => event), errors });
   }));
 
   app.use(express.static(publicDir, { etag: true, maxAge: 0, setHeaders: (res) => { res.set('Cache-Control', 'no-cache'); } }));
