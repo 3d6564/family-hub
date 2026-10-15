@@ -55,6 +55,8 @@ Weather settings store a location, Fahrenheit or Celsius, 1 to 7 forecast days, 
 
 The service applies numbered migrations at startup. Adults can download a backup from Settings, under Access. That file is the whole household. Keep it private. Restore from that same screen replaces the current database and restarts the service. A restored copy on another machine also needs `APP_ORIGIN` and `ALLOWED_ORIGINS` set to the new address. Sign in again after a restore. Stop the service or use SQLite's online backup API when copying the database file by hand.
 
+Before an update, read the [update and recovery guide](docs/update-and-recovery.md) and [release policy](docs/release-policy.md).
+
 ## Raspberry Pi kiosk
 
 Use 64-bit Raspberry Pi OS Desktop on a Pi 4B or Pi 5. Install Docker Engine and the Compose plugin, clone this repository, create `.env`, and start the service with `docker compose up -d --build`. Do not use the older 32-bit DAKOS installation for this deployment.
@@ -89,6 +91,8 @@ Open the HTTPS URL on each phone and use the browser's **Add to Home Screen** or
 ## CI and releases
 
 `.github/workflows/ci.yml` runs syntax checks and tests for each push and pull request. A deployment workflow is intentionally not included because the Git remote, target host, registry, and secret store are not yet defined. The production unit is the Docker image built by `Dockerfile`; `compose.yaml` keeps household data in a named volume across image updates.
+
+Published images and a portable Compose stack are not available yet. The [Portainer guide](docs/portainer.md) remains a draft until they are tested.
 
 Preview captures are in `artifacts/wall.png` and `artifacts/phone.png`. They use temporary local reminders and sample household data in a disposable test database, not production records.
 

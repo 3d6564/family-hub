@@ -1,0 +1,66 @@
+# Update and recovery guide
+
+Family Hub never installs updates automatically.
+
+## Before updating
+
+1. Download a backup from **Settings > Access**.
+2. Store it privately outside the Docker host.
+3. Record the current image version or Git commit.
+4. Read the target release's setup, migration, and rollback notes.
+5. Confirm the environment settings and data volume.
+
+The Settings backup is a consistent SQLite copy and contains the full
+household, including calendar feed URLs. Do not copy the live database file:
+write-ahead logging can leave committed data in a separate WAL file. Stop the
+container first if a file copy is required.
+
+## Update
+
+Published-image Compose support depends on issue #7. When available:
+
+```sh
+# Set the selected immutable image tag in the stack first.
+docker compose pull
+docker compose up -d
+```
+
+For the current source build, select the intended Git revision and run:
+
+```sh
+docker compose up -d --build --remove-orphans
+```
+
+On a prepared Pi, `scripts/deploy-pi.sh` performs the source-build update while
+preserving `.env` and the data volume. For Portainer, follow
+[`portainer.md`](portainer.md).
+
+With any container manager, replace only the application container. Keep the
+existing environment settings and mount the existing volume at `/data`. Never
+run `docker compose down --volumes` during an update.
+
+After replacement, confirm container health and open the calendar and Settings.
+Until issue #10 adds a formal health check, confirm that startup has no error.
+
+## Roll back
+
+Follow the classification in the release notes.
+
+For **Direct rollback supported**, select the recorded previous immutable tag
+and replace the container without changing the volume. Do not use `stable` as a
+rollback reference.
+
+For **Backup restore required**:
+
+1. Stop attempts to run the previous image against the migrated database.
+2. Run an image that can open the migrated database.
+3. Restore the pre-update backup from **Settings > Access**.
+4. After Family Hub restarts, deploy the previous immutable image.
+5. Confirm health, the calendar, and Settings.
+
+Restoration removes changes made after the backup. If Settings is unavailable,
+stop the service and restore at the host level without overwriting the only
+database copy.
+
+If an update fails, preserve `.env` and the volume, check the container logs for
+non-sensitive errors, and follow the release's rollback classification.
