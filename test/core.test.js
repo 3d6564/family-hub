@@ -16,6 +16,21 @@ import { createPairingCode, createSession, digest, hashPassword, verifyPassword 
 function database() { return openDatabase(':memory:'); }
 function household(db, name) { return Number(db.prepare('INSERT INTO households(name,timezone) VALUES (?,?)').run(name, 'UTC').lastInsertRowid); }
 
+test('readiness reports database availability without authentication', async (t) => {
+  const db = database(), server = createApp(db).listen(0);
+  t.after(() => server.close());
+  await new Promise((resolve) => server.once('listening', resolve));
+  const url = `http://127.0.0.1:${server.address().port}/health/ready`;
+  let response = await fetch(url);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal(await response.text(), 'ready');
+  db.close();
+  response = await fetch(url);
+  assert.equal(response.status, 503);
+  assert.equal(await response.text(), 'unavailable');
+});
+
 test('month keys use the household timezone', () => {
   assert.equal(monthKey(new Date('2026-10-01T00:30:00Z'), 'America/Los_Angeles'), '2026-09');
 });

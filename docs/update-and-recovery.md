@@ -39,8 +39,11 @@ With any container manager, replace only the application container. Keep the
 existing environment settings and mount the existing volume at `/data`. Never
 run `docker compose down --volumes` during an update.
 
-After replacement, confirm container health and open the calendar and Settings.
-Until issue #10 adds a formal health check, confirm that startup has no error.
+After replacement, run `docker compose ps`. The container starts as `starting`
+and becomes `healthy` after the server and database respond. If it becomes
+`unhealthy`, inspect the container logs without sharing sensitive data. A
+health failure does not restart the container; the restart policy applies when
+the server exits. After it is healthy, open the calendar and Settings.
 
 ## Roll back
 

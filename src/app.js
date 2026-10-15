@@ -39,6 +39,15 @@ export function createApp(db, dependencies = {}) {
   const app = express();
   const deploymentVersion = crypto.randomUUID();
   app.disable('x-powered-by');
+  app.get('/health/ready', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    try {
+      db.prepare('SELECT 1').get();
+      res.type('text').send('ready');
+    } catch {
+      res.status(503).type('text').send('unavailable');
+    }
+  });
   app.use(express.json({ limit: '64kb' }));
   app.use('/api', (req, res, next) => {
     res.set('Cache-Control', 'no-store');
