@@ -415,6 +415,21 @@ test('paired displays report screen dimensions for adult settings', async (t) =>
   assert.ok(devices[0].last_seen_at);
 });
 
+test('paired displays report dimensions while an adult session is active', async (t) => {
+  const db = database(), home = household(db, 'Home');
+  const password = await hashPassword('a secure password');
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'mixed-screen@example.test', 'Adult', password).lastInsertRowid);
+  const deviceToken = createSession(db, { householdId: home, kind: 'device', deviceName: 'Phone' });
+  const adultToken = createSession(db, { householdId: home, userId: adult });
+  process.env.APP_ORIGIN = 'http://127.0.0.1'; const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); });
+  await new Promise((resolve) => server.once('listening', resolve)); const base = `http://127.0.0.1:${server.address().port}`;
+  const headers = { cookie: `family_device_session=${deviceToken}; family_user_session=${adultToken}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' };
+  const response = await fetch(`${base}/api/device/screen`, { method: 'POST', headers, body: JSON.stringify({ screenWidth: 1179, screenHeight: 2556, viewportWidth: 393, viewportHeight: 852, pixelRatio: 3 }) });
+  assert.equal(response.status, 200);
+  const device = db.prepare("SELECT screen_width,screen_height,viewport_width,viewport_height FROM sessions WHERE kind='device' AND device_name='Phone'").get();
+  assert.deepEqual(device, { screen_width: 1179, screen_height: 2556, viewport_width: 393, viewport_height: 852 });
+});
+
 test('token board is off by default and can be enabled by an adult', async (t) => {
   const db = database(), home = household(db, 'Home');
   const password = await hashPassword('a secure password');

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { restoreDatabase, writeBackup } from './backup.js';
-import { authenticate, clearUserSessionCookie, createPairingCode, createSession, csrf, digest, hashPassword, parseCookies, requireAdult, requireUser, setSessionCookie, USER_COOKIE, verifyPassword } from './auth.js';
+import { authenticate, clearUserSessionCookie, createPairingCode, createSession, csrf, DEVICE_COOKIE, digest, hashPassword, parseCookies, requireAdult, requireUser, setSessionCookie, USER_COOKIE, verifyPassword } from './auth.js';
 import { chorePeriod, isChoreDue, localDate, parseDays } from './domain.js';
 import { fetchFeedEvents, validateFeedUrl } from './ical.js';
 import { ensureTokenLedger, postChoreEarning, reverseChoreEarning, tokenLedger, tokenStatus, TokenError, withdrawTokens } from './tokens.js';
@@ -287,13 +287,15 @@ export function createApp(db, dependencies = {}) {
     res.json({ tokenBoardEnabled: !!tokenBoardEnabled });
   });
   app.post('/api/device/screen', (req, res) => {
-    if (req.auth.kind !== 'device') return res.status(403).json({ error: 'A paired display is required.' });
+    const token = parseCookies(req.headers.cookie)[DEVICE_COOKIE];
+    const device = token && db.prepare("SELECT id,household_id FROM sessions WHERE token_hash=? AND kind='device' AND expires_at>?").get(digest(token), new Date().toISOString());
+    if (!device) return res.status(403).json({ error: 'A paired display is required.' });
     const integer = (value, max = 20000) => Number.isInteger(value) && value > 0 && value <= max ? value : null;
     const screenWidth = integer(req.body.screenWidth), screenHeight = integer(req.body.screenHeight);
     const viewportWidth = integer(req.body.viewportWidth), viewportHeight = integer(req.body.viewportHeight);
     const pixelRatio = Number(req.body.pixelRatio);
     if (!screenWidth || !screenHeight || !viewportWidth || !viewportHeight || !Number.isFinite(pixelRatio) || pixelRatio < 0.5 || pixelRatio > 8) return res.status(400).json({ error: 'The screen dimensions are invalid.' });
-    db.prepare('UPDATE sessions SET screen_width=?,screen_height=?,viewport_width=?,viewport_height=?,pixel_ratio=?,last_seen_at=CURRENT_TIMESTAMP WHERE id=? AND household_id=?').run(screenWidth, screenHeight, viewportWidth, viewportHeight, pixelRatio, req.auth.id, req.auth.household_id);
+    db.prepare('UPDATE sessions SET screen_width=?,screen_height=?,viewport_width=?,viewport_height=?,pixel_ratio=?,last_seen_at=CURRENT_TIMESTAMP WHERE id=? AND household_id=?').run(screenWidth, screenHeight, viewportWidth, viewportHeight, pixelRatio, device.id, device.household_id);
     res.json({ ok: true });
   });
   app.get('/api/devices', requireAdult, (req, res) => res.json(db.prepare("SELECT id,device_name,screen_width,screen_height,viewport_width,viewport_height,pixel_ratio,last_seen_at,created_at,expires_at FROM sessions WHERE household_id=? AND kind='device' ORDER BY created_at DESC").all(req.auth.household_id)));
