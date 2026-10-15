@@ -1,10 +1,15 @@
 import express from 'express';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { restoreDatabase, writeBackup } from './backup.js';
 import { authenticate, clearUserSessionCookie, createPairingCode, createSession, csrf, digest, hashPassword, parseCookies, requireAdult, requireUser, setSessionCookie, USER_COOKIE, verifyPassword } from './auth.js';
 import { chorePeriod, isChoreDue, localDate, parseDays } from './domain.js';
 import { fetchFeedEvents, validateFeedUrl } from './ical.js';
+import { ensureTokenLedger, postChoreEarning, reverseChoreEarning, tokenLedger, tokenStatus, TokenError, withdrawTokens } from './tokens.js';
+import { currentForecast, fetchWeather, weatherProviderIds } from './weather.js';
 
 const publicDir = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'public');
 const clients = new Map();
@@ -61,10 +66,42 @@ export function createApp(db, dependencies = {}) {
   const auth = authenticate(db);
   app.use('/api', auth, csrf);
   app.get('/api/me', (req, res) => {
-    const household = db.prepare('SELECT id,name,display_title displayTitle,timezone,week_starts_on weekStartsOn,dim_enabled dimEnabled,dim_start dimStart,dim_end dimEnd,theme FROM households WHERE id=?').get(req.auth.household_id);
+    const household = db.prepare('SELECT id,name,display_title displayTitle,timezone,week_starts_on weekStartsOn,dim_enabled dimEnabled,dim_start dimStart,dim_end dimEnd,theme,token_board_enabled tokenBoardEnabled,routine_morning_start routineMorningStart,routine_afternoon_start routineAfternoonStart,routine_bedtime_start routineBedtimeStart FROM households WHERE id=?').get(req.auth.household_id);
+    household.tokenBoardEnabled = !!household.tokenBoardEnabled;
     res.json({ household, user: req.auth.user_id ? { id: req.auth.user_id, name: req.auth.name, email: req.auth.email, role: req.auth.role } : null, device: req.auth.kind === 'device' ? req.auth.device_name : null });
   });
   app.get('/api/version', (req, res) => res.json({ version: deploymentVersion }));
+  const databasePath = dependencies.databasePath || process.env.DATABASE_PATH || db.name;
+  let restoring = false;
+  app.get('/api/household/backup', requireAdult, asyncRoute(async (req, res) => {
+    if (restoring) return res.status(409).json({ error: 'A restore is in progress. Try again after Family Hub restarts.' });
+    const dest = path.join(os.tmpdir(), `family-hub-${crypto.randomUUID()}.sqlite`);
+    try {
+      await writeBackup(db, dest);
+      const stamp = new Date().toISOString().slice(0, 10);
+      res.download(dest, `family-hub-${stamp}.sqlite`, () => fs.rmSync(dest, { force: true }));
+    } catch (error) {
+      fs.rmSync(dest, { force: true });
+      throw error;
+    }
+  }));
+  app.post('/api/household/restore', requireAdult, express.raw({ type: 'application/octet-stream', limit: '64mb' }), asyncRoute(async (req, res) => {
+    if (restoring) return res.status(409).json({ error: 'A restore is already in progress.' });
+    if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: 'Choose a Family Hub backup file.' });
+    restoring = true;
+    try {
+      await restoreDatabase(db, databasePath, req.body);
+      res.json({ ok: true, restarting: true });
+      res.on('finish', () => setTimeout(() => (dependencies.restart || (() => process.exit(0)))(), 300));
+    } catch (error) {
+      if (!db.open) {
+        if (!res.headersSent) res.status(500).json({ error: 'Restore did not finish. Family Hub will restart on the previous database.' });
+        return setTimeout(() => (dependencies.restart || (() => process.exit(0)))(), 300);
+      }
+      restoring = false;
+      return res.status(error.status || 400).json({ error: error.message || 'Choose a Family Hub backup file.' });
+    }
+  }));
   app.post('/api/logout', (req, res) => {
     const token = parseCookies(req.headers.cookie)[USER_COOKIE];
     if (token) db.prepare('DELETE FROM sessions WHERE token_hash=?').run(digest(token));
@@ -77,9 +114,10 @@ export function createApp(db, dependencies = {}) {
     req.on('close', () => set.delete(res));
   });
 
-  app.get('/api/dashboard', (req, res) => {
+  app.get('/api/dashboard', asyncRoute(async (req, res) => {
     const h = req.auth.household_id;
-    const household = db.prepare('SELECT timezone FROM households WHERE id=?').get(h);
+    const household = db.prepare(`SELECT id,timezone,weather_enabled,weather_location,weather_units,weather_api_key,weather_provider,weather_days,
+      weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?`).get(h);
     const today = localDate(new Date(), household.timezone);
     const routines = db.prepare(`SELECT r.id,r.title,r.days,r.period,r.sort_order,a.child_id,u.name child_name,EXISTS(SELECT 1 FROM routine_completions c WHERE c.routine_id=r.id AND c.child_id=a.child_id AND c.completed_on=?) completed
       FROM routines r JOIN routine_assignees a ON a.routine_id=r.id JOIN users u ON u.id=a.child_id WHERE r.household_id=? AND r.active=1 ORDER BY r.sort_order,r.id,u.name`).all(today, h).filter((r) => r.days.split(',').includes(String(new Date(`${today}T12:00:00Z`).getUTCDay())));
@@ -88,9 +126,11 @@ export function createApp(db, dependencies = {}) {
       .map((c) => ({ ...c, completed: !!db.prepare('SELECT 1 FROM chore_completions WHERE chore_id=? AND period_key=?').get(c.id, chorePeriod(c.recurrence, new Date(), household.timezone)) }))
       .filter((c) => c.recurrence !== 'once' || !c.completed);
     const plans = db.prepare('SELECT * FROM family_targets WHERE household_id=? ORDER BY sort_order,id').all(h);
-    const dim = db.prepare('SELECT dim_enabled enabled,dim_start start,dim_end end,timezone,theme,display_title displayTitle FROM households WHERE id=?').get(h);
-    res.json({ today, routines, chores, plans, dim });
-  });
+    const dim = db.prepare('SELECT dim_enabled enabled,dim_start start,dim_end end,timezone,theme,display_title displayTitle,token_board_enabled tokenBoardEnabled,routine_morning_start routineMorningStart,routine_afternoon_start routineAfternoonStart,routine_bedtime_start routineBedtimeStart FROM households WHERE id=?').get(h);
+    dim.tokenBoardEnabled = !!dim.tokenBoardEnabled;
+    const weather = await currentForecast(db, household, dependencies.fetchForecast || fetchWeather);
+    res.json({ today, routines, chores, plans, dim, weather });
+  }));
 
   app.get('/api/members', requireAdult, (req, res) => res.json(db.prepare("SELECT id,name,role,email NOT LIKE 'child-%@family-hub.invalid' has_email FROM users WHERE household_id=? ORDER BY role,name").all(req.auth.household_id)));
   app.post('/api/members', requireAdult, asyncRoute(async (req, res) => {
@@ -159,13 +199,104 @@ export function createApp(db, dependencies = {}) {
     db.prepare('UPDATE households SET dim_enabled=?,dim_start=?,dim_end=? WHERE id=?').run(dimEnabled, dimStart, dimEnd, req.auth.household_id);
     emit(req.auth.household_id, 'dashboard'); res.json({ dimEnabled, dimStart, dimEnd });
   });
+  app.put('/api/household/routine-times', requireAdult, (req, res) => {
+    const time = (value) => text(value, 5);
+    const morningStart = time(req.body.morningStart), afternoonStart = time(req.body.afternoonStart), bedtimeStart = time(req.body.bedtimeStart);
+    const valid = (value) => /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value || '');
+    if (![morningStart, afternoonStart, bedtimeStart].every(valid) || !(morningStart < afternoonStart && afternoonStart < bedtimeStart)) return res.status(400).json({ error: 'Choose valid Morning, Afternoon, and Bedtime starts in that order.' });
+    db.prepare('UPDATE households SET routine_morning_start=?,routine_afternoon_start=?,routine_bedtime_start=? WHERE id=?').run(morningStart, afternoonStart, bedtimeStart, req.auth.household_id);
+    emit(req.auth.household_id, 'tasks'); res.json({ routineMorningStart: morningStart, routineAfternoonStart: afternoonStart, routineBedtimeStart: bedtimeStart });
+  });
+  function weatherKeyValue(value) {
+    if (value === undefined) return undefined;
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return '';
+    return trimmed.length <= 200 ? trimmed : null;
+  }
+  function weatherKeysFor(householdId) {
+    const saved = Object.fromEntries(db.prepare('SELECT provider,api_key FROM weather_provider_keys WHERE household_id=?').all(householdId).map((row) => [row.provider, row.api_key]));
+    return Object.fromEntries(weatherProviderIds().map((provider) => [provider, saved[provider] || '']));
+  }
+  function weatherSettings(row, keys) {
+    return {
+      enabled: !!row.weather_enabled, location: row.weather_location || '', units: row.weather_units, provider: row.weather_provider || 'openweathermap', days: row.weather_days || 5,
+      showPrecip: !!row.weather_show_precip, showWind: !!row.weather_show_wind, showHumidity: !!row.weather_show_humidity, showCurrent: !!row.weather_show_current, showFeels: !!row.weather_show_feels,
+      keys, hasKey: Object.fromEntries(weatherProviderIds().map((provider) => [provider, !!keys[provider]])),
+    };
+  }
+  app.get('/api/household/weather', requireAdult, (req, res) => {
+    const row = db.prepare('SELECT weather_enabled,weather_location,weather_units,weather_provider,weather_days,weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?').get(req.auth.household_id);
+    res.json(weatherSettings(row, weatherKeysFor(req.auth.household_id)));
+  });
+  app.put('/api/household/weather', requireAdult, (req, res) => {
+    const id = req.auth.household_id;
+    const current = db.prepare('SELECT weather_enabled,weather_location,weather_units,weather_api_key,weather_provider,weather_days,weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?').get(id);
+    const enabled = req.body.enabled === undefined ? current.weather_enabled : req.body.enabled ? 1 : 0;
+    const location = req.body.location === undefined ? current.weather_location : text(req.body.location, 80);
+    const units = req.body.units === undefined ? current.weather_units : req.body.units === 'c' ? 'c' : req.body.units === 'f' ? 'f' : null;
+    const provider = req.body.provider === undefined ? (current.weather_provider || 'openweathermap') : text(req.body.provider, 20);
+    const days = req.body.days === undefined ? current.weather_days || 5 : Number(req.body.days);
+    const flag = (name, column) => req.body[name] === undefined ? current[column] : req.body[name] ? 1 : 0;
+    if (!weatherProviderIds().includes(provider)) return res.status(400).json({ error: 'Choose OpenWeatherMap, Open-Meteo, WeatherAPI.com, or Pirate Weather.' });
+    if (!Number.isInteger(days) || days < 1 || days > 7) return res.status(400).json({ error: 'Choose 1 to 7 forecast days.' });
+    if (enabled && !location) return res.status(400).json({ error: 'Enter a location to show the forecast.' });
+    if (!units) return res.status(400).json({ error: 'Choose Fahrenheit or Celsius.' });
+    const keys = weatherKeysFor(id);
+    if (req.body.keys !== undefined && (typeof req.body.keys !== 'object' || Array.isArray(req.body.keys))) return res.status(400).json({ error: 'Save each provider key separately.' });
+    for (const name of weatherProviderIds()) {
+      if (!req.body.keys || req.body.keys[name] === undefined) continue;
+      const key = weatherKeyValue(req.body.keys[name]);
+      if (key === null) return res.status(400).json({ error: 'Each weather API key must be 200 characters or fewer.' });
+      keys[name] = key;
+    }
+    if (req.body.apiKey !== undefined && req.body.keys?.[provider] === undefined) {
+      const key = weatherKeyValue(req.body.apiKey);
+      if (key === null) return res.status(400).json({ error: 'Weather API key must be 200 characters or fewer.' });
+      if (key !== '') keys[provider] = key;
+    }
+    if (enabled && provider !== 'open-meteo' && !keys[provider]) return res.status(400).json({ error: 'Save an API key for this provider, or choose Open-Meteo.' });
+    const activeKey = keys[provider] || null;
+    const refreshForecast = location !== current.weather_location || units !== current.weather_units || provider !== (current.weather_provider || 'openweathermap') || activeKey !== (current.weather_provider === provider ? current.weather_api_key : weatherKeysFor(id)[provider]);
+    db.transaction(() => {
+      db.prepare(`UPDATE households SET weather_enabled=?,weather_location=?,weather_units=?,weather_api_key=?,weather_provider=?,weather_days=?,
+        weather_show_precip=?,weather_show_wind=?,weather_show_humidity=?,weather_show_current=?,weather_show_feels=? WHERE id=?`).run(
+        enabled, location, units, activeKey, provider, days, flag('showPrecip', 'weather_show_precip'), flag('showWind', 'weather_show_wind'), flag('showHumidity', 'weather_show_humidity'), flag('showCurrent', 'weather_show_current'), flag('showFeels', 'weather_show_feels'), id);
+      const saveKey = db.prepare(`INSERT INTO weather_provider_keys(household_id,provider,api_key) VALUES (?,?,?)
+        ON CONFLICT(household_id,provider) DO UPDATE SET api_key=excluded.api_key`);
+      const deleteKey = db.prepare('DELETE FROM weather_provider_keys WHERE household_id=? AND provider=?');
+      for (const name of weatherProviderIds()) if (keys[name]) saveKey.run(id, name, keys[name]); else deleteKey.run(id, name);
+      if (refreshForecast) db.prepare('DELETE FROM weather_cache WHERE household_id=?').run(id);
+    })();
+    emit(id, 'dashboard');
+    const saved = db.prepare('SELECT weather_enabled,weather_location,weather_units,weather_provider,weather_days,weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?').get(id);
+    const response = weatherSettings(saved, weatherKeysFor(id));
+    delete response.keys;
+    res.json(response);
+  });
   app.put('/api/household/theme', requireAdult, (req, res) => {
     const theme = text(req.body.theme, 12);
     if (!['green', 'slate', 'blue', 'warm'].includes(theme)) return res.status(400).json({ error: 'Choose Green, Slate, Blue, or Warm.' });
     db.prepare('UPDATE households SET theme=? WHERE id=?').run(theme, req.auth.household_id);
     emit(req.auth.household_id, 'dashboard'); res.json({ theme });
   });
-  app.get('/api/devices', requireAdult, (req, res) => res.json(db.prepare("SELECT id,device_name,created_at,expires_at FROM sessions WHERE household_id=? AND kind='device' ORDER BY created_at DESC").all(req.auth.household_id)));
+  app.put('/api/household/token-board', requireAdult, (req, res) => {
+    const tokenBoardEnabled = req.body.enabled ? 1 : 0;
+    db.prepare('UPDATE households SET token_board_enabled=? WHERE id=?').run(tokenBoardEnabled, req.auth.household_id);
+    emit(req.auth.household_id, 'dashboard');
+    res.json({ tokenBoardEnabled: !!tokenBoardEnabled });
+  });
+  app.post('/api/device/screen', (req, res) => {
+    if (req.auth.kind !== 'device') return res.status(403).json({ error: 'A paired display is required.' });
+    const integer = (value, max = 20000) => Number.isInteger(value) && value > 0 && value <= max ? value : null;
+    const screenWidth = integer(req.body.screenWidth), screenHeight = integer(req.body.screenHeight);
+    const viewportWidth = integer(req.body.viewportWidth), viewportHeight = integer(req.body.viewportHeight);
+    const pixelRatio = Number(req.body.pixelRatio);
+    if (!screenWidth || !screenHeight || !viewportWidth || !viewportHeight || !Number.isFinite(pixelRatio) || pixelRatio < 0.5 || pixelRatio > 8) return res.status(400).json({ error: 'The screen dimensions are invalid.' });
+    db.prepare('UPDATE sessions SET screen_width=?,screen_height=?,viewport_width=?,viewport_height=?,pixel_ratio=?,last_seen_at=CURRENT_TIMESTAMP WHERE id=? AND household_id=?').run(screenWidth, screenHeight, viewportWidth, viewportHeight, pixelRatio, req.auth.id, req.auth.household_id);
+    res.json({ ok: true });
+  });
+  app.get('/api/devices', requireAdult, (req, res) => res.json(db.prepare("SELECT id,device_name,screen_width,screen_height,viewport_width,viewport_height,pixel_ratio,last_seen_at,created_at,expires_at FROM sessions WHERE household_id=? AND kind='device' ORDER BY created_at DESC").all(req.auth.household_id)));
   app.delete('/api/devices/:id', requireAdult, (req, res) => { db.prepare("DELETE FROM sessions WHERE id=? AND household_id=? AND kind='device'").run(req.params.id, req.auth.household_id); res.status(204).end(); });
 
   function childIdsFor(householdId, ids) {
@@ -257,15 +388,44 @@ export function createApp(db, dependencies = {}) {
     const chore = db.prepare('SELECT c.*,h.timezone FROM chores c JOIN households h ON h.id=c.household_id WHERE c.id=? AND c.household_id=?').get(req.params.id, req.auth.household_id);
     if (!chore) return res.status(404).json({ error: 'Chore not found.' });
     if (req.auth.kind === 'device' && !isChoreDue(chore, new Date(), chore.timezone)) return res.status(403).json({ error: 'This chore is not due today.' });
-    const period = chorePeriod(chore.recurrence, new Date(), chore.timezone), existing = db.prepare('SELECT 1 FROM chore_completions WHERE chore_id=? AND period_key=?').get(chore.id, period);
-    if (existing) {
-      db.prepare('DELETE FROM chore_completions WHERE chore_id=? AND period_key=?').run(chore.id, period);
-      if (chore.recurrence === 'once') db.prepare('UPDATE chores SET active=1 WHERE id=?').run(chore.id);
-    } else {
-      db.prepare('INSERT INTO chore_completions(chore_id,period_key) VALUES (?,?)').run(chore.id, period);
-      if (chore.recurrence === 'once') db.prepare('UPDATE chores SET active=0 WHERE id=?').run(chore.id);
+    const period = chorePeriod(chore.recurrence, new Date(), chore.timezone);
+    try {
+      ensureTokenLedger(db, req.auth.household_id);
+      const toggle = db.transaction(() => {
+        const existing = db.prepare('SELECT 1 FROM chore_completions WHERE chore_id=? AND period_key=?').get(chore.id, period);
+        if (existing) {
+          reverseChoreEarning(db, chore, period);
+          db.prepare('DELETE FROM chore_completions WHERE chore_id=? AND period_key=?').run(chore.id, period);
+          if (chore.recurrence === 'once') db.prepare('UPDATE chores SET active=1 WHERE id=?').run(chore.id);
+          return false;
+        }
+        db.prepare('INSERT INTO chore_completions(chore_id,period_key) VALUES (?,?)').run(chore.id, period);
+        postChoreEarning(db, chore, period);
+        if (chore.recurrence === 'once') db.prepare('UPDATE chores SET active=0 WHERE id=?').run(chore.id);
+        return true;
+      });
+      const completed = toggle.immediate();
+      emit(req.auth.household_id, 'tasks');
+      res.json({ completed });
+    } catch (error) {
+      if (error instanceof TokenError) return res.status(error.status).json({ error: error.message });
+      throw error;
     }
-    emit(req.auth.household_id, 'tasks'); res.json({ completed: !existing });
+  });
+  app.get('/api/tokens', (req, res) => res.json(tokenStatus(db, req.auth.household_id)));
+  app.get('/api/tokens/ledger', (req, res) => {
+    try { res.json(tokenLedger(db, req.auth.household_id, req.query.userId)); }
+    catch (error) { if (error instanceof TokenError) return res.status(error.status).json({ error: error.message }); throw error; }
+  });
+  app.post('/api/tokens/withdraw', (req, res) => {
+    try {
+      const result = withdrawTokens(db, { householdId: req.auth.household_id, userId: Number(req.body.userId), copper: req.body.copper, silver: req.body.silver, gold: req.body.gold, requestId: req.body.requestId });
+      emit(req.auth.household_id, 'tasks');
+      res.json(result);
+    } catch (error) {
+      if (error instanceof TokenError) return res.status(error.status).json({ error: error.message });
+      throw error;
+    }
   });
   app.get('/api/chores/history', requireAdult, (req, res) => {
     res.json(db.prepare(`SELECT c.period_key,c.completed_at,h.title,u.name assignee_name FROM chore_completions c JOIN chores h ON h.id=c.chore_id LEFT JOIN users u ON u.id=h.assignee_id WHERE h.household_id=? ORDER BY c.completed_at DESC LIMIT 2000`).all(req.auth.household_id));

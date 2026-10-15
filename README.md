@@ -14,7 +14,7 @@ Requirements: Node.js 22+, npm, and build tools supported by `better-sqlite3` if
 
 No sample household records are created. Add children, routines, chores, plans, reminders, and calendar feeds after sign-in. Create the first two adults with the local bootstrap command. Adults can add more household members in Settings.
 
-Routines are personal habits or school steps, such as brushing teeth or practicing spelling. Each assigned child checks off their own routine for the day. Routine periods can be expanded or collapsed; the current period opens by default. Chores are household jobs, such as setting the table or sorting recycling; they can be assigned to someone or left for anyone. Each chore can have a reward value in $0.25 increments, shown beside its name. Routine, chore, and reminder edits use an in-app dialog. A scheduled chore stays until it is marked done, and that completion is kept for the day. Timed calendar events show their time next to the title. Event details close when you tap outside the window. Crowded days use tighter spacing and a slightly smaller type size so every event stays in the cell. A day with only a few events keeps those events compact. Calendar feeds can be reordered in Settings; events are grouped by feed order and remain chronological within each feed. During the live month's final week, the calendar starts at the current week and shows five weeks ahead. The household title in the header can be customized. The header shows the weekday, month, date, and year, plus the time on wider screens. Settings can change the color palette. The header button switches light or dark mode on each display, and the dim schedule forces dark mode during its hours. Each palette works in either mode.
+Routines are personal habits or school steps, such as brushing teeth or practicing spelling. Each assigned child checks off their own routine for the day. Routine periods can be expanded or collapsed; the current period opens by default. When a period ends, finished items leave that list. Unfinished items from earlier in the day stay open. Chores are household jobs, such as setting the table or sorting recycling; they can be assigned to someone or left for anyone. Each chore can have a reward value in $0.25 increments, shown beside its name. Assigned chore rewards are added to that child's token ledger when the chore is checked off. The Tokens screen works like an ATM: copper is $0.25, silver is $0.50, and gold is $1.00. Total earned stays on the leaderboard. Available is the amount that has not been withdrawn. A withdrawn reward cannot be unchecked. Chores assigned to anyone are not added to a token balance. Routine, chore, and reminder edits use an in-app dialog. A scheduled chore stays until it is marked done, and that completion is kept for the day. Timed calendar events show their time next to the title. Event details close when you tap outside the window. Crowded days use tighter spacing and a slightly smaller type size so every event stays in the cell. The current day uses the palette accent as a cell tint and outline, so it stays visible when that cell is full. A multi-day event appears on each day it covers, with a mark showing that it continues. A day with only a few events keeps those events compact. Calendar feeds can be reordered in Settings; events are grouped by feed order and remain chronological within each feed. During the live month's final week, the calendar starts at the current week and shows five weeks ahead. The household title in the header can be customized. The header shows the weekday, month, date, and year, plus the time on wider screens. Settings can change the color palette. The header button switches light or dark mode on each display, and the dim schedule forces dark mode during its hours. Each palette works in either mode.
 
 Run checks with:
 
@@ -30,15 +30,19 @@ npm test
 3. On the wall display, select **Pair display** and enter the code within 10 minutes.
 4. Revoke a display from **Settings** at any time.
 
+Each paired display reports its resolution, browser viewport, scale factor, and last-seen time. Adults can review these details and a scaled calendar preview in **Settings > Screens**.
+
 Deployment automation can create a 10-minute code for the deployment's household with `npm run pairing-code`. The command prints only the code. In Docker, run `docker compose exec family-hub npm run --silent pairing-code` to suppress npm's command banner.
 
-The wall display gets a separate opaque device session. It can read the dashboard and calendar, and toggle today's routines and chores. It cannot change reminders, members, plans, calendar feeds, task order, or account settings. It never receives calendar feed URLs.
+The wall display gets a separate opaque device session. It can read the dashboard and calendar, and toggle today's routines and chores. It cannot change reminders, members, plans, calendar feeds, task order, or account settings. It never receives calendar feed URLs or the weather API key. Signed-in adults add a local reminder from the plus button on the calendar. A local reminder stays in Family Hub and is not added to an outside calendar. On the wall calendar, the header and outer padding are shorter, and a forecast can sit above routines and chores.
 
 ## Calendar feeds
 
 Adults add read-only iCal feeds in **Settings** with a calendar name, iCal URL, and color. For Google Calendar, open the calendar's **Settings and sharing** page, then copy either **Public address in iCal format** for a public calendar or **Secret address in iCal format** for a private calendar. To revoke a secret address, reset it in Google Calendar and delete or replace the feed in Family Hub.
 
 Treat an iCal URL as a bearer secret: anyone with the URL can read that calendar. The URL is hidden after save, but is stored as plain text in SQLite. Keep the database and backups private. Feed events are fetched when requested and are not copied into the local database.
+
+Weather settings store a location, Fahrenheit or Celsius, 1 to 7 forecast days, and display choices for precipitation, wind, humidity, current temperature, and feels-like temperature. The providers are OpenWeatherMap, Open-Meteo, WeatherAPI.com, and Pirate Weather. Each provider keeps its own API key, so switching providers does not require entering the other key again. Signed-in adults can view and edit those keys in Settings. The wall display never receives a key. Open-Meteo works without a key. A saved Open-Meteo key uses its customer API. OpenWeatherMap can show up to 5 days. The other providers can show up to 7 days.
 
 ## Docker deployment
 
@@ -49,7 +53,7 @@ Treat an iCal URL as a bearer secret: anyone with the URL can read that calendar
 4. Port 3000 listens on the host network for private-LAN administration. Put an HTTPS reverse proxy in front of it for phone PWA installation or access across networks. Do not forward port 3000 directly to the internet.
 5. Back up the Docker volume. SQLite data and calendar feed URLs are stored there. Keep the database and backups private.
 
-The service applies numbered migrations at startup. Stop the service or use SQLite's online backup API when making a manual database backup.
+The service applies numbered migrations at startup. Adults can download a backup from Settings, under Access. That file is the whole household. Keep it private. Restore from that same screen replaces the current database and restarts the service. A restored copy on another machine also needs `APP_ORIGIN` and `ALLOWED_ORIGINS` set to the new address. Sign in again after a restore. Stop the service or use SQLite's online backup API when copying the database file by hand.
 
 ## Raspberry Pi kiosk
 

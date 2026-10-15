@@ -12,7 +12,7 @@
     "bootstrap": "node src/bootstrap.js",
     "pairing-code": "node src/pairing-code.js",
     "test": "node --test --test-concurrency=1",
-    "check": "node --check src/server.js && node --check public/app.js"
+    "check": "node --check src/server.js && node --check public/app.js && node --check public/routine-view.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.2.0",
