@@ -12,7 +12,8 @@
 <body>
   <main id="auth" class="auth-shell" hidden>
     <section class="auth-card"><p class="eyebrow">FAMILY HUB</p><h1>Welcome home</h1><p class="muted">Sign in on a phone, or pair this screen as a wall display.</p>
-      <div class="tabs"><button class="tab active" data-auth-tab="login">Sign in</button><button class="tab" data-auth-tab="pair">Pair display</button></div>
+      <div id="setup-panel" hidden><p class="muted">This Family Hub is empty. Restore a backup or start a new household.</p><button type="button" id="setup-restore">Restore from backup</button><button type="button" id="setup-new">Start new</button><form id="setup-account" hidden><label>Household name<input name="householdName" maxlength="80" required></label><label>Your name<input name="name" maxlength="80" required></label><label>Email<input name="email" type="email" autocomplete="username" required></label><label>Password<input name="password" type="password" minlength="12" autocomplete="new-password" required></label><button class="primary">Create household</button></form><input id="setup-backup" type="file" accept=".sqlite,application/octet-stream" hidden></div>
+      <div class="tabs" id="auth-tabs"><button class="tab active" data-auth-tab="login">Sign in</button><button class="tab" data-auth-tab="pair">Pair display</button></div>
       <form id="login-form"><label>Email<input name="email" type="email" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button class="primary">Sign in</button></form>
       <form id="pair-form" hidden><label>Pairing code<input name="code" inputmode="text" autocomplete="one-time-code" required></label><label>Display name<input name="name" value="Kitchen wall" required></label><button class="primary">Pair screen</button></form>
       <p id="auth-error" class="error" role="alert"></p><button id="auth-cancel" hidden>Return to display</button>
