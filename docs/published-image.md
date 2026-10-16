@@ -1,51 +1,28 @@
 # Published image deployment
 
-The prepared Pi uses `scripts/deploy-pi.sh` and `compose.pi.yaml`. That file
-keeps the existing project name, data volume, and port binding. `compose.yaml`
-in this repository remains the local source-build file.
+Family Hub runs from the public image `ghcr.io/3d6564/family-hub`. The image
+does not contain `.env`, the database, or household data. Use an immutable
+version tag. Do not use `stable` for the Pi.
 
-The image is public. It does not contain `.env`, the database, or household data.
-
-## Compose
-
-Set an immutable version, then start the separate stack:
+`compose.yaml` is the only deployment stack. It keeps household data in the
+named volume mounted at `/data`. Do not run `docker compose down --volumes`.
 
 ```sh
-export FAMILY_HUB_VERSION=0.2.0
-docker compose -f compose.published.yaml up -d
+export FAMILY_HUB_VERSION=0.1.0
+docker compose pull
+docker compose up -d
 ```
 
-The stack name is `family-hub-published`. It does not use the current Pi's
-source-build volume. Its named volume stays mounted at `/data` when the image
-is replaced. Do not run `docker compose down --volumes`.
+The prepared Pi uses `./scripts/deploy-pi.sh`. That command pulls the pinned
+image, preserves `.env` and the existing data volume, and replaces the
+container.
 
-Portainer can import `compose.published.yaml`. Set `FAMILY_HUB_VERSION` and the
-other environment values in the stack UI. Do not rely on a host-local `.env`
-file.
+Set `FAMILY_HUB_PUBLISH=127.0.0.1:3000` when the reverse proxy runs on the same
+machine. The default publishes port 3000 on the host for the current private
+LAN. Do not expose that port to the internet.
 
-## Network
-
-The default binding is `127.0.0.1:3000`. Use it when the HTTPS reverse proxy
-runs on the same machine.
-
-For a reverse proxy on another private-network machine, set
-`FAMILY_HUB_PUBLISH` to the host's private address and port, such as
-`192.168.1.20:3000`. Do not expose port 3000 to the internet.
-
-## Bind mounts
+Portainer can import `compose.yaml`. Set `FAMILY_HUB_VERSION` and the other
+environment values in the stack UI.
 
 A named volume is the normal data location. A bind mount must be writable by
-the container user `hub`. A directory owned only by the host user can prevent
-startup. Do not point a bind mount at a live database without a backup.
-
-## Update
-
-Record the current immutable tag, back up the database, change
-`FAMILY_HUB_VERSION`, and run:
-
-```sh
-docker compose -f compose.published.yaml pull
-docker compose -f compose.published.yaml up -d
-```
-
-Use the recorded tag for rollback. Do not use `stable` as the Pi's normal tag.
+the container user `hub`.

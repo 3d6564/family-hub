@@ -17,22 +17,16 @@ container first if a file copy is required.
 
 ## Update
 
-Published-image deployment uses `compose.published.yaml`. It is not the current Pi path. When that image is available:
+Set the selected immutable version, then replace the container:
 
 ```sh
 export FAMILY_HUB_VERSION=0.2.0
-docker compose -f compose.published.yaml pull
-docker compose -f compose.published.yaml up -d
+docker compose pull
+docker compose up -d
 ```
 
-For the current source build, select the intended Git revision and run:
-
-```sh
-docker compose up -d --build --remove-orphans
-```
-
-On the prepared Pi, `scripts/deploy-pi.sh` pulls the pinned image and replaces
-the container while preserving `.env` and the data volume. For Portainer, follow
+On the prepared Pi, `scripts/deploy-pi.sh` does this while preserving `.env`
+and the data volume. For Portainer, follow
 [`portainer.md`](portainer.md).
 
 With any container manager, replace only the application container. Keep the
