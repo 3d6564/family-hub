@@ -57,6 +57,40 @@ export function createApp(db, dependencies = {}) {
     next();
   });
 
+  const databasePath = dependencies.databasePath || process.env.DATABASE_PATH || db.name;
+  let restoring = false;
+  const needsSetup = () => db.prepare('SELECT COUNT(*) AS count FROM users').get().count === 0;
+  app.get('/api/setup', (req, res) => res.json({ needsSetup: needsSetup() }));
+  app.post('/api/setup/account', csrf, asyncRoute(async (req, res) => {
+    if (!needsSetup()) return res.status(409).json({ error: 'Family Hub is already set up. Sign in instead.' });
+    const email = text(req.body.email, 254)?.toLowerCase();
+    const name = text(req.body.name, 80);
+    const householdName = text(req.body.householdName, 80);
+    if (!email || !name) return res.status(400).json({ error: 'Enter your name and email.' });
+    let passwordHash;
+    try { passwordHash = await hashPassword(req.body.password); } catch (error) { return res.status(400).json({ error: error.message }); }
+    if (!needsSetup()) return res.status(409).json({ error: 'Family Hub is already set up. Sign in instead.' });
+    const household = db.prepare('SELECT id FROM households ORDER BY id LIMIT 1').get();
+    if (!household) return res.status(500).json({ error: 'Family Hub could not create the household.' });
+    if (householdName) db.prepare('UPDATE households SET name=? WHERE id=?').run(householdName, household.id);
+    const userId = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(household.id, email, name, passwordHash).lastInsertRowid);
+    setSessionCookie(res, createSession(db, { householdId: household.id, userId }), 'user');
+    res.status(201).json({ ok: true });
+  }));
+  app.post('/api/setup/restore', csrf, express.raw({ type: 'application/octet-stream', limit: '64mb' }), asyncRoute(async (req, res) => {
+    if (!needsSetup()) return res.status(409).json({ error: 'Family Hub is already set up. Sign in to restore a backup.' });
+    if (restoring) return res.status(409).json({ error: 'A restore is already in progress.' });
+    if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: 'Choose a Family Hub backup file.' });
+    restoring = true;
+    try {
+      await restoreDatabase(db, databasePath, req.body);
+      res.json({ ok: true, restarting: true });
+      res.on('finish', () => setTimeout(() => (dependencies.restart || (() => process.exit(0)))(), 300));
+    } catch (error) {
+      restoring = false;
+      if (!res.headersSent) res.status(error.status || 400).json({ error: error.message || 'Choose a Family Hub backup file.' });
+    }
+  }));
   app.post('/api/login', csrf, asyncRoute(async (req, res) => {
     const email = text(req.body.email, 254)?.toLowerCase();
     const user = email && db.prepare('SELECT * FROM users WHERE email=?').get(email);
@@ -85,8 +119,6 @@ export function createApp(db, dependencies = {}) {
   app.get('/api/release', requireAdult, (req, res) => res.json(releaseInfo()));
   const updates = dependencies.updateChecker || createUpdateChecker();
   app.get('/api/updates', requireAdult, asyncRoute(async (req, res) => res.json(await updates.status())));
-  const databasePath = dependencies.databasePath || process.env.DATABASE_PATH || db.name;
-  let restoring = false;
   app.get('/api/household/backup', requireAdult, asyncRoute(async (req, res) => {
     if (restoring) return res.status(409).json({ error: 'A restore is in progress. Try again after Family Hub restarts.' });
     const dest = path.join(os.tmpdir(), `family-hub-${crypto.randomUUID()}.sqlite`);

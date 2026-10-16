@@ -48,7 +48,7 @@ Weather settings store a location, Fahrenheit or Celsius, 1 to 7 forecast days, 
 
 1. Create `.env` from `.env.example`. Set `SITE_URL` to the browser address, such as `https://hub.home.example`.
 2. Set `FAMILY_HUB_VERSION` to an immutable image tag, then run `docker compose pull` and `docker compose up -d`.
-3. Create adults inside the running service: `docker compose exec family-hub npm run bootstrap -- --email adult@example.com --name "Adult Name"`. Repeat for the second adult.
+3. Open the browser address. A new Family Hub asks you to restore a backup or create the first adult. The command-line bootstrap remains available: `docker compose exec family-hub npm run bootstrap -- --email adult@example.com --name "Adult Name"`.
 4. Port 3000 listens on the host network for private-LAN administration. Put an HTTPS reverse proxy in front of it for phone PWA installation or access across networks. Do not forward port 3000 directly to the internet.
 5. Back up the Docker volume. SQLite data and calendar feed URLs are stored there. Keep the database and backups private.
 

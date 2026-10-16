@@ -648,6 +648,23 @@ test('token withdrawals keep the earned total and cannot spend more than is avai
   assert.equal(device.person.totalQuarters, 11);
 });
 
+test('an empty hub can be restored or started before sign-in', async (t) => {
+  const previous = process.env.APP_ORIGIN; process.env.APP_ORIGIN = 'http://127.0.0.1';
+  t.after(() => previous === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previous);
+  const db = database(), home = household(db, 'New Home');
+  const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); });
+  await new Promise((resolve) => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`, headers = { origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' };
+  assert.equal((await (await fetch(`${base}/api/setup`)).json()).needsSetup, true);
+  const created = await fetch(`${base}/api/setup/account`, { method: 'POST', headers, body: JSON.stringify({ householdName: 'Test Home', name: 'Adult', email: 'first@example.test', password: 'a secure password' }) });
+  assert.equal(created.status, 201);
+  assert.match(created.headers.get('set-cookie'), /family_user_session=/);
+  assert.equal((await (await fetch(`${base}/api/setup`)).json()).needsSetup, false);
+  assert.equal((await fetch(`${base}/api/setup/account`, { method: 'POST', headers, body: JSON.stringify({ name: 'Other', email: 'other@example.test', password: 'a secure password' }) })).status, 409);
+  assert.equal((await fetch(`${base}/api/setup/restore`, { method: 'POST', headers: { ...headers, 'content-type': 'application/octet-stream' }, body: Buffer.from('not a database') })).status, 409);
+  assert.equal(db.prepare('SELECT name FROM households WHERE id=?').get(home).name, 'Test Home');
+});
+
 test('backup downloads the household database and restore replaces it', async (t) => {
   const previous = process.env.APP_ORIGIN; process.env.APP_ORIGIN = 'http://127.0.0.1';
   t.after(() => previous === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previous);
