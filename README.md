@@ -25,14 +25,16 @@ npm test
 
 ## Wall display pairing
 
-1. Sign in with an adult account on a personal device.
-2. Open **Settings** and select **Create pairing code**.
-3. On the wall display, select **Pair display** and enter the code within 10 minutes.
-4. Revoke a display from **Settings** at any time.
+1. Open Family Hub on the wall display. It shows an 8-character code. The screen does not need a keyboard.
+2. Sign in with an adult account on a personal device.
+3. Open **Settings**, then **Screens**, and enter that code within 10 minutes.
+4. Revoke a display from **Settings**, then **Access**, at any time.
+
+The code on the screen is not enough to sign in. The screen also holds a separate secret, and only that screen receives the display session after an adult approves the code.
 
 Each paired display reports its resolution, browser viewport, scale factor, and last-seen time. Adults can review these details and a scaled calendar preview in **Settings > Screens**.
 
-Deployment automation can create a 10-minute code for the deployment's household with `npm run pairing-code`. The command prints only the code. In Docker, run `docker compose exec family-hub npm run --silent pairing-code` to suppress npm's command banner.
+`npm run pairing-code` still prints an adult-created code for the older API. The wall screen no longer asks for that code. Use **Settings**, then **Screens**, for a screen without a keyboard.
 
 The wall display gets a separate opaque device session. It can read the dashboard and calendar, and toggle today's routines and chores. It cannot change reminders, members, plans, calendar feeds, task order, or account settings. It never receives calendar feed URLs or the weather API key. Signed-in adults add a local reminder from the plus button on the calendar. A local reminder stays in Family Hub and is not added to an outside calendar. On the wall calendar, the header and outer padding are shorter, and a forecast can sit above routines and chores.
 

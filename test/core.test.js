@@ -13,7 +13,7 @@ import { createApp } from '../src/app.js';
 import { releaseInfo } from '../src/release.js';
 import { compareVersions, createUpdateChecker } from '../src/updates.js';
 import { forecastFromOpenWeather, locationQueries, openMeteoCondition, pirateCondition, publicForecast, weatherApiCondition, weatherCondition } from '../src/weather.js';
-import { createPairingCode, createSession, digest, hashPassword, verifyPassword } from '../src/auth.js';
+import { approveDisplayPairing, claimDisplayPairing, createDisplayPairing, createPairingCode, createSession, digest, hashPassword, verifyPassword } from '../src/auth.js';
 
 function database() { return openDatabase(':memory:'); }
 function household(db, name) { return Number(db.prepare('INSERT INTO households(name,timezone) VALUES (?,?)').run(name, 'UTC').lastInsertRowid); }
@@ -23,7 +23,7 @@ test('release metadata stays adult-only and marks local builds as development', 
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   t.after(() => keys.forEach((key) => previous[key] === undefined ? delete process.env[key] : process.env[key] = previous[key]));
   for (const key of keys) delete process.env[key];
-  assert.deepEqual(releaseInfo(), { version: '0.2.3', revision: null, created: null, channel: 'development' });
+  assert.deepEqual(releaseInfo(), { version: '0.2.4', revision: null, created: null, channel: 'development' });
   const db = database(), home = household(db, 'Home'), password = await hashPassword('a secure password');
   const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'release@example.test', 'Adult', password).lastInsertRowid);
   const adultToken = createSession(db, { householdId: home, userId: adult });
@@ -586,6 +586,47 @@ test('password change keeps the current and device sessions and revokes other us
   assert.ok(db.prepare('SELECT 1 FROM sessions WHERE token_hash=?').get(digest(device)));
   assert.equal(await verifyPassword('a newer secure password', db.prepare('SELECT password_hash FROM users WHERE id=?').get(adult).password_hash), true);
   assert.equal((await fetch(`${base}/api/dashboard`)).status, 401);
+});
+
+test('a screen code does not grant a session until an adult approves it', async (t) => {
+  const previous = process.env.APP_ORIGIN; process.env.APP_ORIGIN = 'http://127.0.0.1';
+  t.after(() => previous === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previous);
+  const db = database(), home = household(db, 'Home'), other = household(db, 'Other'), password = await hashPassword('a secure password');
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'screens@example.test', 'Adult', password).lastInsertRowid);
+  const outsider = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(other, 'other-screens@example.test', 'Other', password).lastInsertRowid);
+  const token = createSession(db, { householdId: home, userId: adult });
+  const otherToken = createSession(db, { householdId: other, userId: outsider });
+  const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); });
+  await new Promise((resolve) => server.once('listening', resolve)); const base = `http://127.0.0.1:${server.address().port}`;
+  const headers = { origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' };
+  const started = await fetch(`${base}/api/display-pairings`, { method: 'POST', headers });
+  assert.equal(started.status, 201);
+  const pairing = await started.json();
+  assert.equal(pairing.code.length, 8);
+  assert.notEqual(pairing.secret, pairing.code);
+  const stored = db.prepare('SELECT user_code_hash,device_secret_hash FROM display_pairings WHERE user_code_hash=?').get(digest(pairing.code));
+  assert.equal(stored.user_code_hash, digest(pairing.code));
+  assert.notEqual(stored.user_code_hash, pairing.code);
+  assert.notEqual(stored.device_secret_hash, pairing.secret);
+  const pending = await fetch(`${base}/api/display-pairings/status`, { method: 'POST', headers, body: JSON.stringify({ secret: pairing.secret }) });
+  assert.equal((await pending.json()).status, 'pending');
+  assert.equal(pending.headers.get('set-cookie'), null);
+  const rejected = await fetch(`${base}/api/screens/pair`, { method: 'POST', headers: { ...headers, cookie: `family_user_session=${token}` }, body: JSON.stringify({ code: 'ZZZZZZZZ', name: 'Kitchen' }) });
+  assert.equal(rejected.status, 400);
+  const approved = await fetch(`${base}/api/screens/pair`, { method: 'POST', headers: { ...headers, cookie: `family_user_session=${token}` }, body: JSON.stringify({ code: pairing.code, name: 'Kitchen wall' }) });
+  assert.equal(approved.status, 200);
+  const stolen = await fetch(`${base}/api/screens/pair`, { method: 'POST', headers: { ...headers, cookie: `family_user_session=${otherToken}` }, body: JSON.stringify({ code: pairing.code, name: 'Stolen' }) });
+  assert.equal(stolen.status, 400);
+  const claimed = await fetch(`${base}/api/display-pairings/status`, { method: 'POST', headers, body: JSON.stringify({ secret: pairing.secret }) });
+  assert.equal((await claimed.json()).status, 'paired');
+  assert.match(claimed.headers.get('set-cookie'), /family_device_session=/);
+  assert.doesNotMatch(claimed.headers.get('set-cookie'), /family_user_session=/);
+  const again = claimDisplayPairing(db, pairing.secret);
+  assert.equal(again.already, true);
+  assert.equal(again.householdId, undefined);
+  assert.equal(approveDisplayPairing(db, other, pairing.code, 'Late'), false);
+  const local = createDisplayPairing(db);
+  assert.equal(db.prepare('SELECT device_secret_hash FROM display_pairings WHERE user_code_hash=?').get(digest(local.code)).device_secret_hash, digest(local.secret));
 });
 
 test('temporary password exception and pairing codes stay limited to explicit helpers', async () => {
