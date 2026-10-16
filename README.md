@@ -59,7 +59,7 @@ Before an update, read the [update and recovery guide](docs/update-and-recovery.
 
 ## Raspberry Pi kiosk
 
-Use 64-bit Raspberry Pi OS Desktop on a Pi 4B or Pi 5. Install Docker Engine and the Compose plugin, clone this repository, create `.env`, and start the service with `docker compose up -d --build`. Do not use the older 32-bit DAKOS installation for this deployment.
+Use 64-bit Raspberry Pi OS Desktop on a Pi 4B or Pi 5. Install Docker Engine and the Compose plugin. Do not use the older 32-bit DAKOS installation for this deployment.
 
 For the prepared `family-hub` Pi, provision and deploy repeatedly from this repository:
 
@@ -68,7 +68,7 @@ For the prepared `family-hub` Pi, provision and deploy repeatedly from this repo
 ./scripts/deploy-pi.sh
 ```
 
-`provision-pi.sh` installs Debian's Docker and Compose packages. `deploy-pi.sh` synchronizes tracked application files to `/opt/family-hub`, preserves the remote `.env` and Docker data volume, rebuilds the image, applies migrations at startup, and replaces the running container. Run the deploy command after pulling or checking out any revision. The script accepts another SSH destination as its first argument.
+`provision-pi.sh` installs Debian's Docker and Compose packages. `deploy-pi.sh` pulls pinned image `ghcr.io/3d6564/family-hub:0.1.0`, preserves the remote `.env` and Docker data volume, and replaces the container. Set `FAMILY_HUB_VERSION` to deploy another immutable tag. Set `FAMILY_HUB_SOURCE_BUILD=1` only for a source-build rollback. The script accepts another SSH destination as its first argument.
 
 After pairing the wall display, add Chromium kiosk startup to the desktop user's autostart configuration:
 
