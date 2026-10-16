@@ -46,8 +46,7 @@ Weather settings store a location, Fahrenheit or Celsius, 1 to 7 forecast days, 
 
 ## Docker deployment
 
-1. Create `.env` from `.env.example`. Use the public HTTPS URL for `APP_ORIGIN`.
-   Set `ALLOWED_ORIGINS` to the comma-separated browser origins allowed to submit changes. Include each temporary LAN URL used before HTTPS is configured.
+1. Create `.env` from `.env.example`. Set `APP_ORIGIN` to the browser address, such as `https://hub.home.example`. Set `ALLOWED_ORIGINS` to that same address.
 2. Set `FAMILY_HUB_VERSION` to an immutable image tag, then run `docker compose pull` and `docker compose up -d`.
 3. Create adults inside the running service: `docker compose exec family-hub npm run bootstrap -- --email adult@example.com --name "Adult Name"`. Repeat for the second adult.
 4. Port 3000 listens on the host network for private-LAN administration. Put an HTTPS reverse proxy in front of it for phone PWA installation or access across networks. Do not forward port 3000 directly to the internet.
@@ -70,7 +69,7 @@ For the prepared `family-hub` Pi, provision and deploy repeatedly from this repo
 
 `provision-pi.sh` installs Debian's Docker and Compose packages. `deploy-pi.sh` pulls pinned image `ghcr.io/3d6564/family-hub:0.1.0`, preserves the remote `.env` and Docker data volume, and replaces the container. Set `FAMILY_HUB_VERSION` to deploy another immutable tag. The script accepts another SSH destination as its first argument.
 
-The wall display opens the same origin as `APP_ORIGIN`. After HTTPS is enabled, run:
+The wall display opens the same browser address as `APP_ORIGIN`. After HTTPS is enabled, run:
 
 ```sh
 APP_ORIGIN=https://hub.example ./scripts/configure-kiosk.sh
@@ -86,7 +85,7 @@ Raspberry Pi OS does not guarantee an on-screen keyboard in Chromium kiosk mode.
 
 ## HTTPS and phone installation
 
-Terminate HTTPS at a reverse proxy such as Caddy on the homelab. Use a private DNS name with a certificate trusted by both phones and the wall display, or use a secure private-network product that supplies a trusted HTTPS name. Do not forward the app directly to the public internet. Set `APP_ORIGIN` and `ALLOWED_ORIGINS` to that exact HTTPS origin, then point the kiosk at the same origin.
+Terminate HTTPS at a reverse proxy such as nginx or Caddy. Use a private name with a certificate trusted by the phones and the wall display. Do not forward port 3000 to the internet. Set both `APP_ORIGIN` and `ALLOWED_ORIGINS` to the browser address, such as `https://hub.home.example`, then point the kiosk at that same address.
 
 Open the HTTPS URL on each phone and use the browser's **Add to Home Screen** or **Install app** command. PWA installation and service workers require HTTPS except on `localhost`.
 
