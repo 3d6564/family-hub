@@ -1,7 +1,7 @@
 # Release and rollback policy
 
-This policy applies after published images become available. Current deployments
-still build from source with `compose.yaml`.
+Deployments run a published image from `compose.yaml`. The release workflow
+builds that image. It does not deploy a host.
 
 ## Versions and images
 

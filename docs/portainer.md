@@ -14,7 +14,7 @@
 ## Deploy
 
 1. In **Stacks**, add a stack named `family-hub`.
-2. Paste or upload the release Compose file.
+2. Paste or upload `compose.yaml`.
 3. Select an immutable tag, such as
    `ghcr.io/3d6564/family-hub:0.2.0`.
 4. Add environment values in Portainer instead of relying on a local `.env`.

@@ -48,7 +48,7 @@ Weather settings store a location, Fahrenheit or Celsius, 1 to 7 forecast days, 
 
 1. Create `.env` from `.env.example`. Use the public HTTPS URL for `APP_ORIGIN`.
    Set `ALLOWED_ORIGINS` to the comma-separated browser origins allowed to submit changes. Include each temporary LAN URL used before HTTPS is configured.
-2. Run `docker compose up -d --build`.
+2. Set `FAMILY_HUB_VERSION` to an immutable image tag, then run `docker compose pull` and `docker compose up -d`.
 3. Create adults inside the running service: `docker compose exec family-hub npm run bootstrap -- --email adult@example.com --name "Adult Name"`. Repeat for the second adult.
 4. Port 3000 listens on the host network for private-LAN administration. Put an HTTPS reverse proxy in front of it for phone PWA installation or access across networks. Do not forward port 3000 directly to the internet.
 5. Back up the Docker volume. SQLite data and calendar feed URLs are stored there. Keep the database and backups private.
@@ -68,7 +68,7 @@ For the prepared `family-hub` Pi, provision and deploy repeatedly from this repo
 ./scripts/deploy-pi.sh
 ```
 
-`provision-pi.sh` installs Debian's Docker and Compose packages. `deploy-pi.sh` pulls pinned image `ghcr.io/3d6564/family-hub:0.1.0`, preserves the remote `.env` and Docker data volume, and replaces the container. Set `FAMILY_HUB_VERSION` to deploy another immutable tag. Set `FAMILY_HUB_SOURCE_BUILD=1` only for a source-build rollback. The script accepts another SSH destination as its first argument.
+`provision-pi.sh` installs Debian's Docker and Compose packages. `deploy-pi.sh` pulls pinned image `ghcr.io/3d6564/family-hub:0.1.0`, preserves the remote `.env` and Docker data volume, and replaces the container. Set `FAMILY_HUB_VERSION` to deploy another immutable tag. The script accepts another SSH destination as its first argument.
 
 After pairing the wall display, add Chromium kiosk startup to the desktop user's autostart configuration:
 
@@ -90,9 +90,7 @@ Open the HTTPS URL on each phone and use the browser's **Add to Home Screen** or
 
 ## CI and releases
 
-`.github/workflows/ci.yml` runs syntax checks and tests for each push and pull request. `.github/workflows/release.yml` publishes a private multi-architecture image when a version tag is pushed. It does not deploy a host. The current Pi still builds from source with `compose.yaml`.
-
-The [published image guide](docs/published-image.md) is separate from the current source-build deployment. No release image is published until a version tag runs the release workflow. The [Portainer guide](docs/portainer.md) remains a draft until that image is tested.
+`.github/workflows/ci.yml` runs syntax checks and tests for each push and pull request. `.github/workflows/release.yml` publishes the public multi-architecture image when a version tag is pushed. It does not deploy a host. The [published image guide](docs/published-image.md) describes deployment. The [Portainer guide](docs/portainer.md) remains a draft until that setup is tested.
 
 Preview captures are in `artifacts/wall.png` and `artifacts/phone.png`. They use temporary local reminders and sample household data in a disposable test database, not production records.
 
