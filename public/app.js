@@ -1,19 +1,19 @@
 import { calendarGridWindow, eventSpanDays } from './calendar-view.js';
 import { routinePeriodGroups } from './routine-view.js';
 const $=(s,p=document)=>p.querySelector(s), $$=(s,p=document)=>[...p.querySelectorAll(s)];
-let me, dashboard, members=[], routineCatalog=[], choreCatalog=[], feedCatalog=[], calendarEvents=[], weatherKeys={}, deploymentVersion, cursor=new Date(), openEvent, pinnedMonth=false, shownDay=new Date().toLocaleDateString('en-CA'), shownRoutinePeriod;
+let me, dashboard, members=[], routineCatalog=[], choreCatalog=[], feedCatalog=[], calendarEvents=[], weatherKeys={}, deploymentVersion, cursor=new Date(), openEvent, pinnedMonth=false, shownDay=new Date().toLocaleDateString('en-CA'), shownRoutinePeriod, setupMode=false;
 cursor=new Date(cursor.getFullYear(),cursor.getMonth(),1);
 function toast(message){const el=$('#toast');el.textContent=message;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2500)}
-async function api(url,options={}){const response=await fetch(url,{...options,headers:{'Content-Type':'application/json','X-CSRF-Token':'1',...options.headers}});if(response.status===401){showAuth();throw new Error('Sign in is required.')}if(!response.ok){const body=await response.json().catch(()=>({}));throw new Error(body.error||'The request failed.')}return response.status===204?null:response.json()}
+async function api(url,options={}){const response=await fetch(url,{...options,headers:{'Content-Type':'application/json','X-CSRF-Token':'1',...options.headers}});if(response.status===401){if(!setupMode)showAuth();throw new Error('Sign in is required.')}if(!response.ok){const body=await response.json().catch(()=>({}));throw new Error(body.error||'The request failed.')}return response.status===204?null:response.json()}
 function formJson(form){return Object.fromEntries(new FormData(form))}
 function showAuth(fromDevice=false){$('#app').hidden=true;$('#auth').hidden=false;$('#setup-panel').hidden=true;$('#auth-tabs').hidden=false;$('#auth h1').textContent='Welcome home';$('#auth-intro').textContent='Sign in on a phone, or pair this screen as a wall display.';$('#auth-cancel').hidden=!fromDevice;$$('[data-auth-tab]').forEach(x=>x.classList.toggle('active',x.dataset.authTab==='login'));$('#login-form').hidden=false;$('#pair-form').hidden=true}
-function showSetup(){$('#app').hidden=true;$('#auth').hidden=false;$('#setup-panel').hidden=false;$('#auth-tabs').hidden=true;$('#login-form').hidden=true;$('#pair-form').hidden=true;$('#auth-cancel').hidden=true;$('#auth h1').textContent='Set up Family Hub'}
+function showSetup(){setupMode=true;$('#app').hidden=true;$('#auth').hidden=false;$('#setup-panel').hidden=false;$('#auth-tabs').hidden=true;$('#login-form').hidden=true;$('#pair-form').hidden=true;$('#auth-cancel').hidden=true;$('#auth h1').textContent='Set up Family Hub';$('#auth-intro').textContent='This Family Hub is empty. Restore a backup or start a new household.'}
 function empty(label){return `<p class="empty">${label}</p>`}
 function escape(value=''){const div=document.createElement('div');div.textContent=value;return div.innerHTML}
 function escapeAttribute(value){return escape(value).replaceAll('"','&quot;').replaceAll("'",'&#39;')}
 
 async function load(){
-  const setup=await fetch('/api/setup').then(response=>response.ok?response.json():null).catch(()=>null);if(setup?.needsSetup)return showSetup();
+  const setup=await fetch('/api/setup').then(response=>response.ok?response.json():null).catch(()=>null);if(setup?.needsSetup)return showSetup();setupMode=false;
   try{me=await api('/api/me');$('#auth').hidden=true;$('#app').hidden=false;$('#home-name').textContent=me.household.name.toUpperCase();$('#identity').textContent=me.user?`${me.user.name} · ${me.user.role}`:`${me.device} · paired display`;document.body.classList.toggle('is-adult',me.user?.role==='adult');$$('.adult-only').forEach(e=>e.hidden=me.user?.role!=='adult');$$('.user-only').forEach(e=>e.hidden=!me.user);$('#menu-button').hidden=false;$('#menu-button').textContent=me.user?'Settings':'Admin sign in';members=me.user?.role==='adult'?await api('/api/members'):[];fillMembers();await Promise.all([refresh(),renderCalendar(),loadSettings()]);openView(location.hash.slice(1)||'calendar');connectEvents();
   }catch(error){if(!$('#app').hidden)toast(error.message)}
 }
