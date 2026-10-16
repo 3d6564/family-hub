@@ -58,28 +58,21 @@ The service applies numbered migrations at startup. Adults can download a backup
 
 Before an update, read the [update and recovery guide](docs/update-and-recovery.md) and [release policy](docs/release-policy.md).
 
-## Raspberry Pi kiosk
+## Display computer
 
-Use 64-bit Raspberry Pi OS Desktop on a Pi 4B or Pi 5. Install Docker Engine and the Compose plugin. Do not use the older 32-bit DAKOS installation for this deployment.
+The display computer only runs Chromium. Run the application on a separate host with the tool you choose. This installer does not install Docker or change that host.
 
-For the prepared `family-hub` Pi, provision and deploy repeatedly from this repository:
-
-```sh
-./scripts/provision-pi.sh
-./scripts/deploy-pi.sh
-```
-
-`provision-pi.sh` installs Debian's Docker and Compose packages. `deploy-pi.sh` pulls pinned image `ghcr.io/3d6564/family-hub:0.1.0`, preserves the remote `.env` and Docker data volume, and replaces the container. Set `FAMILY_HUB_VERSION` to deploy another immutable tag. The script accepts another SSH destination as its first argument.
-
-The wall display opens the same browser address as `SITE_URL`. After HTTPS is enabled, run:
+On the signed-in graphical account, run:
 
 ```sh
-SITE_URL=https://hub.home.example ./scripts/configure-kiosk.sh
+curl -fsSL https://raw.githubusercontent.com/3d6564/family-hub/main/scripts/install-display.sh | bash -s -- http://10.10.15.103:3000/
 ```
 
-Use `http://localhost:3000/` only while `SITE_URL` is still HTTP. Do not leave Chromium on that HTTP address after phones use HTTPS. A Secure paired-display cookie is not sent to a different HTTP address.
+To read the script before running it, download `scripts/install-display.sh` and run `./scripts/install-display.sh http://10.10.15.103:3000/`.
 
-The script adds an idempotent Labwc autostart entry. Re-running it does not add duplicate Chromium commands.
+After HTTPS is enabled, use the same address as `SITE_URL`. Do not leave Chromium on an HTTP address after phones use HTTPS. A Secure paired-display cookie is not sent to a different HTTP address.
+
+The first run installs Chromium if it is missing, then starts one kiosk. The browser restarts if it exits. Run the same command again to update that display. Leave the address off to keep the current one. An update does not remove the browser profile. It also removes an older Labwc autostart entry so the display does not open a second browser. A Raspberry Pi can use it, but the script is not limited to Raspberry Pi hardware.
 
 The display connects through micro-HDMI on the Pi to HDMI on the monitor. Touch requires a separate USB upstream/data cable from the monitor to a Pi USB port; an HDMI cable does not carry touch input. The monitor also needs its specified power supply. Before buying a monitor, confirm that its touch controller supports standard Linux USB HID, that its VESA pattern and weight fit the mount, and that both the required video and USB upstream ports remain accessible after mounting. Exact support, cable types, power, and mount compatibility cannot be confirmed without the monitor model and manual.
 
