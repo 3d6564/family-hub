@@ -31,8 +31,8 @@ For the current source build, select the intended Git revision and run:
 docker compose up -d --build --remove-orphans
 ```
 
-On a prepared Pi, `scripts/deploy-pi.sh` performs the source-build update while
-preserving `.env` and the data volume. For Portainer, follow
+On the prepared Pi, `scripts/deploy-pi.sh` pulls the pinned image and replaces
+the container while preserving `.env` and the data volume. For Portainer, follow
 [`portainer.md`](portainer.md).
 
 With any container manager, replace only the application container. Keep the

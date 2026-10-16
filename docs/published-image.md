@@ -1,10 +1,10 @@
 # Published image deployment
 
-This path is separate from the current source-build deployment. Do not replace
-`compose.yaml` or run it on the current Pi until an ARM64 image has been tested.
+The prepared Pi uses `scripts/deploy-pi.sh` and `compose.pi.yaml`. That file
+keeps the existing project name, data volume, and port binding. `compose.yaml`
+in this repository remains the local source-build file.
 
-The image registry is private. A Docker host must log in to `ghcr.io` before it
-can pull an image. Images do not contain `.env`, the database, or household data.
+The image is public. It does not contain `.env`, the database, or household data.
 
 ## Compose
 
