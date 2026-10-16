@@ -8,11 +8,10 @@ Requirements: Node.js 22+, npm, and build tools supported by `better-sqlite3` if
 
 1. Run `cp .env.example .env`.
 2. Run `npm install`.
-3. Create each adult account separately. Run `npm run bootstrap -- --email adult@example.com --name "Adult Name"`, enter a password of at least 12 characters, then repeat for the second adult. For initial local provisioning only, add `--allow-temporary-password` to accept an explicitly temporary password of at least 8 characters, such as `password`. Change it in Settings immediately after sign-in.
-4. Run `npm start`.
-5. Open `http://localhost:3000`.
+3. Run `npm start`.
+4. Open `http://localhost:3000`. A new Family Hub asks you to restore a backup or create the first adult.
 
-No sample household records are created. Add children, routines, chores, plans, reminders, and calendar feeds after sign-in. Create the first two adults with the local bootstrap command. Adults can add more household members in Settings.
+No sample household records are created. Add children, routines, chores, plans, reminders, and calendar feeds after sign-in. Adults can add more household members in Settings. The command-line bootstrap remains available: `npm run bootstrap -- --email adult@example.com --name "Adult Name"`.
 
 Routines are personal habits or school steps, such as brushing teeth or practicing spelling. Each assigned child checks off their own routine for the day. Routine periods can be expanded or collapsed; the current period opens by default. When a period ends, finished items leave that list. Unfinished items from earlier in the day stay open. Chores are household jobs, such as setting the table or sorting recycling; they can be assigned to someone or left for anyone. Each chore can have a reward value in $0.25 increments, shown beside its name. Assigned chore rewards are added to that child's token ledger when the chore is checked off. The Tokens screen works like an ATM: copper is $0.25, silver is $0.50, and gold is $1.00. Total earned stays on the leaderboard. Available is the amount that has not been withdrawn. A withdrawn reward cannot be unchecked. Chores assigned to anyone are not added to a token balance. Routine, chore, and reminder edits use an in-app dialog. A scheduled chore stays until it is marked done, and that completion is kept for the day. Timed calendar events show their time next to the title. Event details close when you tap outside the window. Crowded days use tighter spacing and a slightly smaller type size so every event stays in the cell. The current day uses the palette accent as a cell tint and outline, so it stays visible when that cell is full. A multi-day event appears on each day it covers, with a mark showing that it continues. A day with only a few events keeps those events compact. Calendar feeds can be reordered in Settings; events are grouped by feed order and remain chronological within each feed. During the live month's final week, the calendar starts at the current week and shows five weeks ahead. The household title in the header can be customized. The header shows the weekday, month, date, and year, plus the time on wider screens. Settings can change the color palette. The header button switches light or dark mode on each display, and the dim schedule forces dark mode during its hours. Each palette works in either mode.
 
@@ -65,18 +64,22 @@ The display computer only runs Chromium. Run the application on a separate host 
 On the signed-in graphical account, run:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/3d6564/family-hub/main/scripts/install-display.sh | bash -s -- http://10.10.15.103:3000/
+curl -fsSL https://raw.githubusercontent.com/3d6564/family-hub/main/scripts/install-display.sh | bash -s -- http://hub.home.example:3000/
 ```
 
-To read the script before running it, download `scripts/install-display.sh` and run `./scripts/install-display.sh http://10.10.15.103:3000/`.
+Replace `http://hub.home.example:3000/` with the address you type in the browser. To read the script first, save it and run it:
 
-After HTTPS is enabled, use the same address as `SITE_URL`. Do not leave Chromium on an HTTP address after phones use HTTPS. A Secure paired-display cookie is not sent to a different HTTP address.
+```sh
+curl -fsSL https://raw.githubusercontent.com/3d6564/family-hub/main/scripts/install-display.sh -o install-display.sh
+chmod +x install-display.sh
+./install-display.sh http://hub.home.example:3000/
+```
+
+After HTTPS is enabled, that address must match `SITE_URL`. Do not leave Chromium on an HTTP address after phones use HTTPS. A Secure paired-display cookie is not sent to a different HTTP address.
 
 The first run installs Chromium if it is missing, then starts one kiosk. The browser restarts if it exits. Run the same command again to update that display. Leave the address off to keep the current one. An update does not remove the browser profile. It also removes an older Labwc autostart entry so the display does not open a second browser. A Raspberry Pi can use it, but the script is not limited to Raspberry Pi hardware.
 
-The display connects through micro-HDMI on the Pi to HDMI on the monitor. Touch requires a separate USB upstream/data cable from the monitor to a Pi USB port; an HDMI cable does not carry touch input. The monitor also needs its specified power supply. Before buying a monitor, confirm that its touch controller supports standard Linux USB HID, that its VESA pattern and weight fit the mount, and that both the required video and USB upstream ports remain accessible after mounting. Exact support, cable types, power, and mount compatibility cannot be confirmed without the monitor model and manual.
-
-Raspberry Pi OS does not guarantee an on-screen keyboard in Chromium kiosk mode. Prefer a dashboard that does not require typing on the wall. If wall text entry is required, install and test an on-screen keyboard such as `wvkbd` or `onboard` with the selected desktop session before mounting the display.
+On a Raspberry Pi, video uses micro-HDMI. Touch needs a separate USB data cable. An HDMI cable does not carry touch. Raspberry Pi OS does not guarantee an on-screen keyboard in kiosk mode. The wall display is designed so pairing does not need a keyboard.
 
 ## HTTPS and phone installation
 
@@ -86,7 +89,7 @@ Open the HTTPS URL on each phone and use the browser's **Add to Home Screen** or
 
 ## CI and releases
 
-`.github/workflows/ci.yml` runs syntax checks and tests for each push and pull request. `.github/workflows/release.yml` publishes the public multi-architecture image when a version tag is pushed. It does not deploy a host. The [published image guide](docs/published-image.md) describes deployment. The [Portainer guide](docs/portainer.md) remains a draft until that setup is tested.
+`.github/workflows/ci.yml` runs syntax checks and tests for each push and pull request. `.github/workflows/release.yml` publishes the public multi-architecture image when a version tag is pushed. It does not deploy a host. The host owner chooses the deployment tool. The [published image guide](docs/published-image.md) describes the image and Compose file.
 
 Preview captures are in `artifacts/wall.png` and `artifacts/phone.png`. They use temporary local reminders and sample household data in a disposable test database, not production records.
 
@@ -94,7 +97,7 @@ Preview captures are in `artifacts/wall.png` and `artifacts/phone.png`. They use
 
 - Calendar feeds are read-only. The calendar provider remains the source of truth.
 - The app supports one household per deployment.
-- CI is configured; automatic deployment waits for a named Git host and deployment target.
+- CI is configured. Family Hub publishes an image and does not deploy a host for you.
 
 ## Security notes
 
