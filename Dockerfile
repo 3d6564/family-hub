@@ -4,7 +4,20 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 
 FROM node:22-bookworm-slim
-ENV NODE_ENV=production DATABASE_PATH=/data/family-hub.sqlite
+ARG FAMILY_HUB_VERSION=0.0.0
+ARG FAMILY_HUB_REVISION=unknown
+ARG FAMILY_HUB_CREATED=unknown
+ARG FAMILY_HUB_CHANNEL=development
+ENV NODE_ENV=production DATABASE_PATH=/data/family-hub.sqlite \
+    FAMILY_HUB_VERSION=$FAMILY_HUB_VERSION \
+    FAMILY_HUB_REVISION=$FAMILY_HUB_REVISION \
+    FAMILY_HUB_CREATED=$FAMILY_HUB_CREATED \
+    FAMILY_HUB_CHANNEL=$FAMILY_HUB_CHANNEL
+LABEL org.opencontainers.image.title="Family Hub" \
+      org.opencontainers.image.source="https://github.com/3d6564/family-hub" \
+      org.opencontainers.image.version=$FAMILY_HUB_VERSION \
+      org.opencontainers.image.revision=$FAMILY_HUB_REVISION \
+      org.opencontainers.image.created=$FAMILY_HUB_CREATED
 WORKDIR /app
 RUN groupadd -r hub && useradd -r -g hub hub && mkdir /data && chown hub:hub /data
 COPY --from=dependencies /app/node_modules ./node_modules

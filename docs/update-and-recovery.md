@@ -17,12 +17,12 @@ container first if a file copy is required.
 
 ## Update
 
-Published-image Compose support depends on issue #7. When available:
+Published-image deployment uses `compose.published.yaml`. It is not the current Pi path. When that image is available:
 
 ```sh
-# Set the selected immutable image tag in the stack first.
-docker compose pull
-docker compose up -d
+export FAMILY_HUB_VERSION=0.2.0
+docker compose -f compose.published.yaml pull
+docker compose -f compose.published.yaml up -d
 ```
 
 For the current source build, select the intended Git revision and run:

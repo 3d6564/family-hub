@@ -10,11 +10,36 @@ import { routinePeriodGroups } from '../public/routine-view.js';
 import { chorePeriod, isChoreDue, isDimTime, monthKey, parseDays } from '../src/domain.js';
 import { assertSafeRemoteUrl, parseFeedEvents, validateFeedUrl } from '../src/ical.js';
 import { createApp } from '../src/app.js';
+import { releaseInfo } from '../src/release.js';
 import { forecastFromOpenWeather, locationQueries, openMeteoCondition, pirateCondition, publicForecast, weatherApiCondition, weatherCondition } from '../src/weather.js';
 import { createPairingCode, createSession, digest, hashPassword, verifyPassword } from '../src/auth.js';
 
 function database() { return openDatabase(':memory:'); }
 function household(db, name) { return Number(db.prepare('INSERT INTO households(name,timezone) VALUES (?,?)').run(name, 'UTC').lastInsertRowid); }
+
+test('release metadata stays adult-only and marks local builds as development', async (t) => {
+  const keys = ['FAMILY_HUB_CHANNEL', 'FAMILY_HUB_VERSION', 'FAMILY_HUB_REVISION', 'FAMILY_HUB_CREATED'];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  t.after(() => keys.forEach((key) => previous[key] === undefined ? delete process.env[key] : process.env[key] = previous[key]));
+  for (const key of keys) delete process.env[key];
+  assert.deepEqual(releaseInfo(), { version: '0.1.0', revision: null, created: null, channel: 'development' });
+  const db = database(), home = household(db, 'Home'), password = await hashPassword('a secure password');
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'release@example.test', 'Adult', password).lastInsertRowid);
+  const adultToken = createSession(db, { householdId: home, userId: adult });
+  const deviceToken = createSession(db, { householdId: home, kind: 'device', deviceName: 'Wall' });
+  const server = createApp(db).listen(0);
+  t.after(() => { server.close(); db.close(); });
+  await new Promise((resolve) => server.once('listening', resolve));
+  const url = `http://127.0.0.1:${server.address().port}/api/release`;
+  assert.equal((await fetch(url)).status, 401);
+  assert.equal((await fetch(url, { headers: { cookie: `family_device_session=${deviceToken}` } })).status, 403);
+  let response = await fetch(url, { headers: { cookie: `family_user_session=${adultToken}` } });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).channel, 'development');
+  Object.assign(process.env, { FAMILY_HUB_CHANNEL: 'release', FAMILY_HUB_VERSION: '0.2.0', FAMILY_HUB_REVISION: 'a'.repeat(40), FAMILY_HUB_CREATED: '2026-10-15T18:30:00Z' });
+  response = await fetch(url, { headers: { cookie: `family_user_session=${adultToken}` } });
+  assert.deepEqual(await response.json(), { version: '0.2.0', revision: 'a'.repeat(40), created: '2026-10-15T18:30:00Z', channel: 'release' });
+});
 
 test('readiness reports database availability without authentication', async (t) => {
   const db = database(), server = createApp(db).listen(0);

@@ -92,7 +92,7 @@ Open the HTTPS URL on each phone and use the browser's **Add to Home Screen** or
 
 `.github/workflows/ci.yml` runs syntax checks and tests for each push and pull request. A deployment workflow is intentionally not included because the Git remote, target host, registry, and secret store are not yet defined. The production unit is the Docker image built by `Dockerfile`; `compose.yaml` keeps household data in a named volume across image updates.
 
-Published images and a portable Compose stack are not available yet. The [Portainer guide](docs/portainer.md) remains a draft until they are tested.
+The [published image guide](docs/published-image.md) is separate from the current source-build deployment. No release image is published until a version tag runs the release workflow. The [Portainer guide](docs/portainer.md) remains a draft until that image is tested.
 
 Preview captures are in `artifacts/wall.png` and `artifacts/phone.png`. They use temporary local reminders and sample household data in a disposable test database, not production records.
 

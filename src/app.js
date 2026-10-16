@@ -9,6 +9,7 @@ import { authenticate, clearUserSessionCookie, createPairingCode, createSession,
 import { chorePeriod, isChoreDue, localDate, parseDays } from './domain.js';
 import { fetchFeedEvents, validateFeedUrl } from './ical.js';
 import { ensureTokenLedger, postChoreEarning, reverseChoreEarning, tokenLedger, tokenStatus, TokenError, withdrawTokens } from './tokens.js';
+import { releaseInfo } from './release.js';
 import { currentForecast, fetchWeather, weatherProviderIds } from './weather.js';
 
 const publicDir = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'public');
@@ -80,6 +81,7 @@ export function createApp(db, dependencies = {}) {
     res.json({ household, user: req.auth.user_id ? { id: req.auth.user_id, name: req.auth.name, email: req.auth.email, role: req.auth.role } : null, device: req.auth.kind === 'device' ? req.auth.device_name : null });
   });
   app.get('/api/version', (req, res) => res.json({ version: deploymentVersion }));
+  app.get('/api/release', requireAdult, (req, res) => res.json(releaseInfo()));
   const databasePath = dependencies.databasePath || process.env.DATABASE_PATH || db.name;
   let restoring = false;
   app.get('/api/household/backup', requireAdult, asyncRoute(async (req, res) => {
