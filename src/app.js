@@ -35,6 +35,22 @@ function emit(householdId, event = 'update') {
   for (const res of clients.get(householdId) || []) res.write(`event: ${event}\ndata: {}\n\n`);
 }
 function asyncRoute(fn) { return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next); }
+function screenMetrics(body = {}) {
+  const integer = (value, max = 20000) => Number.isInteger(value) && value > 0 && value <= max ? value : null;
+  const metrics = {
+    screenWidth: integer(body.screenWidth),
+    screenHeight: integer(body.screenHeight),
+    viewportWidth: integer(body.viewportWidth),
+    viewportHeight: integer(body.viewportHeight),
+    pixelRatio: Number(body.pixelRatio),
+  };
+  if (!metrics.screenWidth || !metrics.screenHeight || !metrics.viewportWidth || !metrics.viewportHeight || !Number.isFinite(metrics.pixelRatio) || metrics.pixelRatio < 0.5 || metrics.pixelRatio > 8) return null;
+  return metrics;
+}
+function saveDeviceScreen(db, token, metrics) {
+  if (!token || !metrics) return;
+  db.prepare("UPDATE sessions SET screen_width=?,screen_height=?,viewport_width=?,viewport_height=?,pixel_ratio=?,last_seen_at=CURRENT_TIMESTAMP WHERE token_hash=? AND kind='device'").run(metrics.screenWidth, metrics.screenHeight, metrics.viewportWidth, metrics.viewportHeight, metrics.pixelRatio, digest(token));
+}
 
 /** Build the Express application around an opened database. */
 export function createApp(db, dependencies = {}) {
@@ -114,7 +130,11 @@ export function createApp(db, dependencies = {}) {
   });
   app.post('/api/display-pairings/status', csrf, (req, res) => {
     const claim = claimDisplayPairing(db, req.body?.secret);
-    if (claim.status === 'paired' && !claim.already) setSessionCookie(res, createSession(db, { householdId: claim.householdId, kind: 'device', deviceName: claim.deviceName }), 'device');
+    if (claim.status === 'paired' && !claim.already) {
+      const token = createSession(db, { householdId: claim.householdId, kind: 'device', deviceName: claim.deviceName });
+      saveDeviceScreen(db, token, screenMetrics(req.body));
+      setSessionCookie(res, token, 'device');
+    }
     res.json({ status: claim.status });
   });
 
@@ -351,12 +371,9 @@ export function createApp(db, dependencies = {}) {
     const token = parseCookies(req.headers.cookie)[DEVICE_COOKIE];
     const device = token && db.prepare("SELECT id,household_id FROM sessions WHERE token_hash=? AND kind='device' AND expires_at>?").get(digest(token), new Date().toISOString());
     if (!device) return res.status(403).json({ error: 'A paired display is required.' });
-    const integer = (value, max = 20000) => Number.isInteger(value) && value > 0 && value <= max ? value : null;
-    const screenWidth = integer(req.body.screenWidth), screenHeight = integer(req.body.screenHeight);
-    const viewportWidth = integer(req.body.viewportWidth), viewportHeight = integer(req.body.viewportHeight);
-    const pixelRatio = Number(req.body.pixelRatio);
-    if (!screenWidth || !screenHeight || !viewportWidth || !viewportHeight || !Number.isFinite(pixelRatio) || pixelRatio < 0.5 || pixelRatio > 8) return res.status(400).json({ error: 'The screen dimensions are invalid.' });
-    db.prepare('UPDATE sessions SET screen_width=?,screen_height=?,viewport_width=?,viewport_height=?,pixel_ratio=?,last_seen_at=CURRENT_TIMESTAMP WHERE id=? AND household_id=?').run(screenWidth, screenHeight, viewportWidth, viewportHeight, pixelRatio, device.id, device.household_id);
+    const metrics = screenMetrics(req.body);
+    if (!metrics) return res.status(400).json({ error: 'The screen dimensions are invalid.' });
+    db.prepare('UPDATE sessions SET screen_width=?,screen_height=?,viewport_width=?,viewport_height=?,pixel_ratio=?,last_seen_at=CURRENT_TIMESTAMP WHERE id=? AND household_id=?').run(metrics.screenWidth, metrics.screenHeight, metrics.viewportWidth, metrics.viewportHeight, metrics.pixelRatio, device.id, device.household_id);
     res.json({ ok: true });
   });
   app.get('/api/devices', requireAdult, (req, res) => res.json(db.prepare("SELECT id,device_name,screen_width,screen_height,viewport_width,viewport_height,pixel_ratio,last_seen_at,created_at,expires_at FROM sessions WHERE household_id=? AND kind='device' ORDER BY created_at DESC").all(req.auth.household_id)));
