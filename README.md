@@ -70,13 +70,15 @@ For the prepared `family-hub` Pi, provision and deploy repeatedly from this repo
 
 `provision-pi.sh` installs Debian's Docker and Compose packages. `deploy-pi.sh` pulls pinned image `ghcr.io/3d6564/family-hub:0.1.0`, preserves the remote `.env` and Docker data volume, and replaces the container. Set `FAMILY_HUB_VERSION` to deploy another immutable tag. The script accepts another SSH destination as its first argument.
 
-After pairing the wall display, add Chromium kiosk startup to the desktop user's autostart configuration:
+The wall display opens the same origin as `APP_ORIGIN`. After HTTPS is enabled, run:
 
 ```sh
-./scripts/configure-kiosk.sh http://localhost:3000/
+APP_ORIGIN=https://hub.example ./scripts/configure-kiosk.sh
 ```
 
-The script adds an idempotent Labwc autostart entry. Re-running it does not add duplicate Chromium commands. Use the local URL while the reverse proxy is not configured; change it to the final HTTPS URL later.
+Use `http://localhost:3000/` only while `APP_ORIGIN` is still HTTP. Do not leave Chromium on that HTTP address after phones use HTTPS. A Secure paired-display cookie is not sent to a different HTTP address.
+
+The script adds an idempotent Labwc autostart entry. Re-running it does not add duplicate Chromium commands.
 
 The display connects through micro-HDMI on the Pi to HDMI on the monitor. Touch requires a separate USB upstream/data cable from the monitor to a Pi USB port; an HDMI cable does not carry touch input. The monitor also needs its specified power supply. Before buying a monitor, confirm that its touch controller supports standard Linux USB HID, that its VESA pattern and weight fit the mount, and that both the required video and USB upstream ports remain accessible after mounting. Exact support, cable types, power, and mount compatibility cannot be confirmed without the monitor model and manual.
 
@@ -84,7 +86,7 @@ Raspberry Pi OS does not guarantee an on-screen keyboard in Chromium kiosk mode.
 
 ## HTTPS and phone installation
 
-Terminate HTTPS at a reverse proxy such as Caddy on the homelab. Use a private DNS name with a certificate trusted by both phones, or use a secure private-network product that supplies a trusted HTTPS name. Do not forward the app directly to the public internet. Set `APP_ORIGIN` to the exact HTTPS origin.
+Terminate HTTPS at a reverse proxy such as Caddy on the homelab. Use a private DNS name with a certificate trusted by both phones and the wall display, or use a secure private-network product that supplies a trusted HTTPS name. Do not forward the app directly to the public internet. Set `APP_ORIGIN` and `ALLOWED_ORIGINS` to that exact HTTPS origin, then point the kiosk at the same origin.
 
 Open the HTTPS URL on each phone and use the browser's **Add to Home Screen** or **Install app** command. PWA installation and service workers require HTTPS except on `localhost`.
 
