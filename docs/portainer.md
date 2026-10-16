@@ -9,7 +9,7 @@
 - The release Compose file and an immutable image tag
 - Private network access; never expose port 3000 to the internet
 - An HTTPS reverse proxy for phones
-- `APP_ORIGIN`, `ALLOWED_ORIGINS`, `TZ`, `HOUSEHOLD_NAME`, and `SESSION_DAYS`
+- `SITE_URL`, `TZ`, `HOUSEHOLD_NAME`, and `SESSION_DAYS`
 
 ## Deploy
 

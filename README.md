@@ -46,13 +46,13 @@ Weather settings store a location, Fahrenheit or Celsius, 1 to 7 forecast days, 
 
 ## Docker deployment
 
-1. Create `.env` from `.env.example`. Set `APP_ORIGIN` to the browser address, such as `https://hub.home.example`. Set `ALLOWED_ORIGINS` to that same address.
+1. Create `.env` from `.env.example`. Set `SITE_URL` to the browser address, such as `https://hub.home.example`.
 2. Set `FAMILY_HUB_VERSION` to an immutable image tag, then run `docker compose pull` and `docker compose up -d`.
 3. Create adults inside the running service: `docker compose exec family-hub npm run bootstrap -- --email adult@example.com --name "Adult Name"`. Repeat for the second adult.
 4. Port 3000 listens on the host network for private-LAN administration. Put an HTTPS reverse proxy in front of it for phone PWA installation or access across networks. Do not forward port 3000 directly to the internet.
 5. Back up the Docker volume. SQLite data and calendar feed URLs are stored there. Keep the database and backups private.
 
-The service applies numbered migrations at startup. Adults can download a backup from Settings, under Access. That file is the whole household. Keep it private. Restore from that same screen replaces the current database and restarts the service. A restored copy on another machine also needs `APP_ORIGIN` and `ALLOWED_ORIGINS` set to the new address. Sign in again after a restore. Stop the service or use SQLite's online backup API when copying the database file by hand.
+The service applies numbered migrations at startup. Adults can download a backup from Settings, under Access. That file is the whole household. Keep it private. Restore from that same screen replaces the current database and restarts the service. A restored copy on another machine also needs `SITE_URL` set to the new browser address. Sign in again after a restore. Stop the service or use SQLite's online backup API when copying the database file by hand.
 
 Before an update, read the [update and recovery guide](docs/update-and-recovery.md) and [release policy](docs/release-policy.md).
 
@@ -69,13 +69,13 @@ For the prepared `family-hub` Pi, provision and deploy repeatedly from this repo
 
 `provision-pi.sh` installs Debian's Docker and Compose packages. `deploy-pi.sh` pulls pinned image `ghcr.io/3d6564/family-hub:0.1.0`, preserves the remote `.env` and Docker data volume, and replaces the container. Set `FAMILY_HUB_VERSION` to deploy another immutable tag. The script accepts another SSH destination as its first argument.
 
-The wall display opens the same browser address as `APP_ORIGIN`. After HTTPS is enabled, run:
+The wall display opens the same browser address as `SITE_URL`. After HTTPS is enabled, run:
 
 ```sh
-APP_ORIGIN=https://hub.example ./scripts/configure-kiosk.sh
+SITE_URL=https://hub.home.example ./scripts/configure-kiosk.sh
 ```
 
-Use `http://localhost:3000/` only while `APP_ORIGIN` is still HTTP. Do not leave Chromium on that HTTP address after phones use HTTPS. A Secure paired-display cookie is not sent to a different HTTP address.
+Use `http://localhost:3000/` only while `SITE_URL` is still HTTP. Do not leave Chromium on that HTTP address after phones use HTTPS. A Secure paired-display cookie is not sent to a different HTTP address.
 
 The script adds an idempotent Labwc autostart entry. Re-running it does not add duplicate Chromium commands.
 
@@ -85,7 +85,7 @@ Raspberry Pi OS does not guarantee an on-screen keyboard in Chromium kiosk mode.
 
 ## HTTPS and phone installation
 
-Terminate HTTPS at a reverse proxy such as nginx or Caddy. Use a private name with a certificate trusted by the phones and the wall display. Do not forward port 3000 to the internet. Set both `APP_ORIGIN` and `ALLOWED_ORIGINS` to the browser address, such as `https://hub.home.example`, then point the kiosk at that same address.
+Terminate HTTPS at a reverse proxy such as nginx or Caddy. Use a private name with a certificate trusted by the phones and the wall display. Do not forward port 3000 to the internet. Set `SITE_URL` to the browser address, such as `https://hub.home.example`, then point the kiosk at that same address.
 
 Open the HTTPS URL on each phone and use the browser's **Add to Home Screen** or **Install app** command. PWA installation and service workers require HTTPS except on `localhost`.
 
@@ -104,7 +104,7 @@ Preview captures are in `artifacts/wall.png` and `artifacts/phone.png`. They use
 ## Security notes
 
 - Passwords use Node.js scrypt with per-password salts.
-- Session and pairing tokens are stored as SHA-256 digests. Session cookies are HttpOnly, SameSite=Strict, and Secure when `APP_ORIGIN` uses HTTPS.
+- Session and pairing tokens are stored as SHA-256 digests. Session cookies are HttpOnly, SameSite=Strict, and Secure when `SITE_URL` uses HTTPS.
 - State-changing API calls require the configured same origin and a CSRF request header.
 - Every household record query is scoped to the authenticated household.
 - Calendar feed URLs are bearer secrets stored in SQLite. Normal APIs and the frontend never return them after save.
