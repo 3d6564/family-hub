@@ -90,7 +90,7 @@ Open the HTTPS URL on each phone and use the browser's **Add to Home Screen** or
 
 ## CI and releases
 
-`.github/workflows/ci.yml` runs syntax checks and tests for each push and pull request. A deployment workflow is intentionally not included because the Git remote, target host, registry, and secret store are not yet defined. The production unit is the Docker image built by `Dockerfile`; `compose.yaml` keeps household data in a named volume across image updates.
+`.github/workflows/ci.yml` runs syntax checks and tests for each push and pull request. `.github/workflows/release.yml` publishes a private multi-architecture image when a version tag is pushed. It does not deploy a host. The current Pi still builds from source with `compose.yaml`.
 
 The [published image guide](docs/published-image.md) is separate from the current source-build deployment. No release image is published until a version tag runs the release workflow. The [Portainer guide](docs/portainer.md) remains a draft until that image is tested.
 
