@@ -23,7 +23,7 @@ test('release metadata stays adult-only and marks local builds as development', 
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   t.after(() => keys.forEach((key) => previous[key] === undefined ? delete process.env[key] : process.env[key] = previous[key]));
   for (const key of keys) delete process.env[key];
-  assert.deepEqual(releaseInfo(), { version: '0.2.4', revision: null, created: null, channel: 'development' });
+  assert.deepEqual(releaseInfo(), { version: '0.3.0', revision: null, created: null, channel: 'development' });
   const db = database(), home = household(db, 'Home'), password = await hashPassword('a secure password');
   const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'release@example.test', 'Adult', password).lastInsertRowid);
   const adultToken = createSession(db, { householdId: home, userId: adult });
@@ -617,10 +617,14 @@ test('a screen code does not grant a session until an adult approves it', async 
   assert.equal(approved.status, 200);
   const stolen = await fetch(`${base}/api/screens/pair`, { method: 'POST', headers: { ...headers, cookie: `family_user_session=${otherToken}` }, body: JSON.stringify({ code: pairing.code, name: 'Stolen' }) });
   assert.equal(stolen.status, 400);
-  const claimed = await fetch(`${base}/api/display-pairings/status`, { method: 'POST', headers, body: JSON.stringify({ secret: pairing.secret }) });
+  const claimed = await fetch(`${base}/api/display-pairings/status`, { method: 'POST', headers, body: JSON.stringify({ secret: pairing.secret, screenWidth: 1920, screenHeight: 1080, viewportWidth: 1920, viewportHeight: 1080, pixelRatio: 1 }) });
   assert.equal((await claimed.json()).status, 'paired');
   assert.match(claimed.headers.get('set-cookie'), /family_device_session=/);
   assert.doesNotMatch(claimed.headers.get('set-cookie'), /family_user_session=/);
+  const deviceToken = decodeURIComponent(claimed.headers.get('set-cookie').split('=')[1].split(';')[0]);
+  const screen = db.prepare('SELECT screen_width,screen_height,viewport_width,viewport_height FROM sessions WHERE token_hash=?').get(digest(deviceToken));
+  assert.equal(screen.viewport_width, 1920);
+  assert.equal(screen.viewport_height, 1080);
   const again = claimDisplayPairing(db, pairing.secret);
   assert.equal(again.already, true);
   assert.equal(again.householdId, undefined);
