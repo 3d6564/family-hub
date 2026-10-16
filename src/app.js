@@ -10,6 +10,7 @@ import { chorePeriod, isChoreDue, localDate, parseDays } from './domain.js';
 import { fetchFeedEvents, validateFeedUrl } from './ical.js';
 import { ensureTokenLedger, postChoreEarning, reverseChoreEarning, tokenLedger, tokenStatus, TokenError, withdrawTokens } from './tokens.js';
 import { releaseInfo } from './release.js';
+import { createUpdateChecker } from './updates.js';
 import { currentForecast, fetchWeather, weatherProviderIds } from './weather.js';
 
 const publicDir = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'public');
@@ -82,6 +83,8 @@ export function createApp(db, dependencies = {}) {
   });
   app.get('/api/version', (req, res) => res.json({ version: deploymentVersion }));
   app.get('/api/release', requireAdult, (req, res) => res.json(releaseInfo()));
+  const updates = dependencies.updateChecker || createUpdateChecker();
+  app.get('/api/updates', requireAdult, asyncRoute(async (req, res) => res.json(await updates.status())));
   const databasePath = dependencies.databasePath || process.env.DATABASE_PATH || db.name;
   let restoring = false;
   app.get('/api/household/backup', requireAdult, asyncRoute(async (req, res) => {

@@ -105,6 +105,7 @@ Preview captures are in `artifacts/wall.png` and `artifacts/phone.png`. They use
 
 - Passwords use Node.js scrypt with per-password salts.
 - Session and pairing tokens are stored as SHA-256 digests. Session cookies are HttpOnly, SameSite=Strict, and Secure when `SITE_URL` uses HTTPS.
+- Update checks are off by default. Set `FAMILY_HUB_UPDATE_CHECK=1` to let adults see a newer GitHub release. The server checks GitHub, browsers do not, and Family Hub never installs the update. A check reveals the server address and check time to GitHub. The repository is private, so the check also needs `FAMILY_HUB_UPDATE_TOKEN` with release read access. That token is not shown in Settings.
 - State-changing API calls require the configured same origin and a CSRF request header.
 - Every household record query is scoped to the authenticated household.
 - Calendar feed URLs are bearer secrets stored in SQLite. Normal APIs and the frontend never return them after save.

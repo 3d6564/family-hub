@@ -11,6 +11,7 @@ import { chorePeriod, isChoreDue, isDimTime, monthKey, parseDays } from '../src/
 import { assertSafeRemoteUrl, parseFeedEvents, validateFeedUrl } from '../src/ical.js';
 import { createApp } from '../src/app.js';
 import { releaseInfo } from '../src/release.js';
+import { compareVersions, createUpdateChecker } from '../src/updates.js';
 import { forecastFromOpenWeather, locationQueries, openMeteoCondition, pirateCondition, publicForecast, weatherApiCondition, weatherCondition } from '../src/weather.js';
 import { createPairingCode, createSession, digest, hashPassword, verifyPassword } from '../src/auth.js';
 
@@ -39,6 +40,42 @@ test('release metadata stays adult-only and marks local builds as development', 
   Object.assign(process.env, { FAMILY_HUB_CHANNEL: 'release', FAMILY_HUB_VERSION: '0.2.0', FAMILY_HUB_REVISION: 'a'.repeat(40), FAMILY_HUB_CREATED: '2026-10-15T18:30:00Z' });
   response = await fetch(url, { headers: { cookie: `family_user_session=${adultToken}` } });
   assert.deepEqual(await response.json(), { version: '0.2.0', revision: 'a'.repeat(40), created: '2026-10-15T18:30:00Z', channel: 'release' });
+});
+
+test('update checks stay off, cached, and adult-only', async (t) => {
+  assert.equal(compareVersions('0.1.0', '0.2.0') < 0, true);
+  assert.equal(compareVersions('0.2.0', '0.2.0'), 0);
+  assert.equal(compareVersions('0.2.0-rc.1', '0.2.0') < 0, true);
+  assert.equal(compareVersions('0.2.0-rc.2', '0.2.0-rc.1') > 0, true);
+  let calls = 0;
+  const fetchImpl = async (url, options) => {
+    calls += 1;
+    assert.equal(url, 'https://api.github.com/repos/3d6564/family-hub/releases/latest');
+    assert.equal(options.headers.authorization, undefined);
+    return { ok: true, status: 200, headers: { get: () => 'etag-1' }, json: async () => ({ tag_name: 'v0.2.0', draft: false, prerelease: false, html_url: 'https://github.com/3d6564/family-hub/releases/tag/v0.2.0' }) };
+  };
+  const env = { FAMILY_HUB_UPDATE_CHECK: '0', FAMILY_HUB_VERSION: '0.1.0', FAMILY_HUB_CHANNEL: 'release' };
+  const checker = createUpdateChecker({ fetch: fetchImpl, env });
+  assert.deepEqual(await checker.status(), { enabled: false, installed: '0.1.0' });
+  assert.equal(calls, 0);
+  env.FAMILY_HUB_UPDATE_CHECK = '1';
+  const available = await checker.status();
+  assert.equal(available.updateAvailable, true);
+  assert.equal(available.notesUrl, 'https://github.com/3d6564/family-hub/releases/tag/v0.2.0');
+  await checker.status();
+  assert.equal(calls, 1);
+  const failing = createUpdateChecker({ fetch: async () => { throw new Error('GitHub unavailable'); }, env });
+  assert.equal((await failing.status()).state, 'unavailable');
+  const db = database(), home = household(db, 'Home'), password = await hashPassword('a secure password');
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'updates@example.test', 'Adult', password).lastInsertRowid);
+  const deviceToken = createSession(db, { householdId: home, kind: 'device', deviceName: 'Wall' });
+  const adultToken = createSession(db, { householdId: home, userId: adult });
+  const server = createApp(db, { updateChecker: checker }).listen(0);
+  t.after(() => { server.close(); db.close(); });
+  await new Promise((resolve) => server.once('listening', resolve));
+  const url = `http://127.0.0.1:${server.address().port}/api/updates`;
+  assert.equal((await fetch(url, { headers: { cookie: `family_device_session=${deviceToken}` } })).status, 403);
+  assert.equal((await fetch(url, { headers: { cookie: `family_user_session=${adultToken}` } })).status, 200);
 });
 
 test('readiness reports database availability without authentication', async (t) => {
