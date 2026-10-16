@@ -36,9 +36,20 @@ export function createSession(db, { householdId, userId = null, kind = 'user', d
   return token;
 }
 
+/** Browser address used for cookies and saved changes. Older names still work. */
+export function siteUrl(env = process.env) {
+  return (env.SITE_URL || env.APP_ORIGIN || '').trim().replace(/\/$/, '');
+}
+
+/** Addresses allowed to save changes. SITE_URL is included automatically. */
+export function allowedSiteOrigins(env = process.env, fallback = '') {
+  const origins = [siteUrl(env), ...(env.ALLOWED_ORIGINS || '').split(',')].map((value) => value.trim().replace(/\/$/, '')).filter(Boolean);
+  return [...new Set(origins.length ? origins : [fallback].filter(Boolean))];
+}
+
 export function setSessionCookie(res, token, kind = 'user') {
   const cookie = kind === 'device' ? DEVICE_COOKIE : USER_COOKIE;
-  const secure = process.env.APP_ORIGIN?.startsWith('https://') ? '; Secure' : '';
+  const secure = siteUrl().startsWith('https://') ? '; Secure' : '';
   res.setHeader('Set-Cookie', `${cookie}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${+(process.env.SESSION_DAYS || 30) * 86400}${secure}`);
 }
 
@@ -77,7 +88,7 @@ export function requireUser(req, res, next) {
 export function csrf(req, res, next) {
   if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
     const origin = req.get('origin');
-    const allowed = (process.env.ALLOWED_ORIGINS || process.env.APP_ORIGIN || `${req.protocol}://${req.get('host')}`).split(',').map((value) => value.trim());
+    const allowed = allowedSiteOrigins(process.env, `${req.protocol}://${req.get('host')}`);
     if (!origin || !allowed.includes(origin) || req.get('x-csrf-token') !== '1') return res.status(403).json({ error: 'Request verification failed.' });
   }
   next();

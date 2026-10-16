@@ -395,13 +395,11 @@ test('one feed failure does not hide local reminders or other feed events', asyn
 });
 
 test('the kiosk origin keeps secure cookies and rejects a different HTTP origin', async (t) => {
-  const previousOrigin = process.env.APP_ORIGIN, previousAllowed = process.env.ALLOWED_ORIGINS;
-  process.env.APP_ORIGIN = 'https://hub.example.test';
-  process.env.ALLOWED_ORIGINS = 'https://hub.example.test';
-  t.after(() => {
-    previousOrigin === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previousOrigin;
-    previousAllowed === undefined ? delete process.env.ALLOWED_ORIGINS : process.env.ALLOWED_ORIGINS = previousAllowed;
-  });
+  const previous = ['SITE_URL', 'APP_ORIGIN', 'ALLOWED_ORIGINS'].map((key) => [key, process.env[key]]);
+  delete process.env.APP_ORIGIN;
+  delete process.env.ALLOWED_ORIGINS;
+  process.env.SITE_URL = 'https://hub.example.test';
+  t.after(() => previous.forEach(([key, value]) => value === undefined ? delete process.env[key] : process.env[key] = value));
   const db = database(), home = household(db, 'Home'), password = await hashPassword('a secure password');
   db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'kiosk@example.test', 'Adult', password);
   const code = createPairingCode(db, home);
@@ -417,8 +415,8 @@ test('the kiosk origin keeps secure cookies and rejects a different HTTP origin'
   assert.match(pair.headers.get('set-cookie'), /family_device_session=.*Secure/);
   const cookie = login.headers.get('set-cookie').split(';')[0];
   assert.equal((await fetch(`${base}/api/logout`, { method: 'POST', headers: { origin: 'http://127.0.0.1:3000', 'x-csrf-token': '1', cookie } })).status, 403);
+  delete process.env.SITE_URL;
   process.env.APP_ORIGIN = 'http://localhost:3000';
-  process.env.ALLOWED_ORIGINS = 'http://localhost:3000';
   const local = await fetch(`${base}/api/login`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://localhost:3000', 'x-csrf-token': '1' }, body: JSON.stringify({ email: 'kiosk@example.test', password: 'a secure password' }) });
   assert.equal(local.status, 200);
   assert.doesNotMatch(local.headers.get('set-cookie'), /Secure/);

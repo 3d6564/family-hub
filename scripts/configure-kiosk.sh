@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-origin=${APP_ORIGIN:-}
+origin=${SITE_URL:-${APP_ORIGIN:-}}
 url=${1:-${origin:-http://localhost:3000/}}
 if [[ $origin == https://* && $url != "$origin" && $url != "$origin/" ]]; then
   printf 'The kiosk must open %s. Do not use a different HTTP address after HTTPS is enabled.\n' "$origin" >&2
