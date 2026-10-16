@@ -23,7 +23,7 @@ test('release metadata stays adult-only and marks local builds as development', 
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   t.after(() => keys.forEach((key) => previous[key] === undefined ? delete process.env[key] : process.env[key] = previous[key]));
   for (const key of keys) delete process.env[key];
-  assert.deepEqual(releaseInfo(), { version: '0.2.1', revision: null, created: null, channel: 'development' });
+  assert.deepEqual(releaseInfo(), { version: '0.2.2', revision: null, created: null, channel: 'development' });
   const db = database(), home = household(db, 'Home'), password = await hashPassword('a secure password');
   const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'release@example.test', 'Adult', password).lastInsertRowid);
   const adultToken = createSession(db, { householdId: home, userId: adult });
