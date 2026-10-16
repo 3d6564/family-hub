@@ -5,12 +5,12 @@
 Keep one settings tab for each independently configured household concern:
 
 - **Display**: header title, color palette, and scheduled dark mode.
-- **Screens**: paired display resolutions, last-seen status, and calendar previews.
+- **Screens**: screen pairing approval, paired display resolutions, last-seen status, and calendar previews.
 - **Calendars**: week start and read-only iCal feeds.
 - **Routines**: household start times for Morning, Afternoon, and Bedtime.
 - **Weather**: forecast visibility, location, units, day count, display choices, and one saved key per provider.
 - **Household**: family members and their roles.
-- **Access**: passwords, paired displays, pairing codes, and sign-out.
+- **Access**: passwords, paired-display revocation, and sign-out.
 - **Integrations**: available and planned outside-service connections.
 
 An integration has a dedicated card in the Integrations tab. The card shows its connection state, the source of truth, the selected data, and an enable switch. Do not show an enable switch for a planned integration. Enable it only after configuration is valid.

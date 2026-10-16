@@ -144,7 +144,7 @@ body[data-view="calendar"] .day-events .event{flex:0 1 22px;min-height:0;height:
 @media(max-width:560px){.edit-item-fields,.edit-child-list{grid-template-columns:1fr}.edit-item-fields fieldset{grid-column:auto}.dialog-actions button{flex:1}}
 .settings-panel #members form{margin-top:10px}
 .settings-panel #devices>div{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--line)}
-.settings-panel #pair-output{display:block;margin:8px 0;text-align:center;font-weight:700;letter-spacing:.15em}
+.pair-code{margin:12px 0;text-align:center;font-size:2.4rem;font-weight:700;letter-spacing:.18em}
 .settings-panel #logout{margin-top:20px}
 .integration-roadmap{display:grid;gap:12px}
 .integration-roadmap article{padding:14px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}

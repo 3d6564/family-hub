@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { restoreDatabase, writeBackup } from './backup.js';
-import { authenticate, clearUserSessionCookie, createPairingCode, createSession, csrf, DEVICE_COOKIE, digest, hashPassword, parseCookies, requireAdult, requireUser, setSessionCookie, USER_COOKIE, verifyPassword } from './auth.js';
+import { approveDisplayPairing, authenticate, claimDisplayPairing, clearUserSessionCookie, createDisplayPairing, createPairingCode, createSession, csrf, DEVICE_COOKIE, digest, hashPassword, parseCookies, requireAdult, requireUser, setSessionCookie, USER_COOKIE, verifyPassword } from './auth.js';
 import { chorePeriod, isChoreDue, localDate, parseDays } from './domain.js';
 import { fetchFeedEvents, validateFeedUrl } from './ical.js';
 import { ensureTokenLedger, postChoreEarning, reverseChoreEarning, tokenLedger, tokenStatus, TokenError, withdrawTokens } from './tokens.js';
@@ -106,6 +106,16 @@ export function createApp(db, dependencies = {}) {
     db.prepare('UPDATE pairing_codes SET used_at=CURRENT_TIMESTAMP WHERE id=?').run(pairing.id);
     setSessionCookie(res, createSession(db, { householdId: pairing.household_id, kind: 'device', deviceName: name }), 'device');
     res.json({ ok: true });
+  });
+  app.post('/api/display-pairings', csrf, (req, res) => {
+    const pairing = createDisplayPairing(db);
+    if (!pairing) return res.status(429).json({ error: 'Too many screens are waiting. Try again in a few minutes.' });
+    res.status(201).json(pairing);
+  });
+  app.post('/api/display-pairings/status', csrf, (req, res) => {
+    const claim = claimDisplayPairing(db, req.body?.secret);
+    if (claim.status === 'paired' && !claim.already) setSessionCookie(res, createSession(db, { householdId: claim.householdId, kind: 'device', deviceName: claim.deviceName }), 'device');
+    res.json({ status: claim.status });
   });
 
   const auth = authenticate(db);
@@ -224,6 +234,11 @@ export function createApp(db, dependencies = {}) {
   app.post('/api/pairing-codes', requireAdult, (req, res) => {
     const code = createPairingCode(db, req.auth.household_id);
     res.status(201).json({ code, expiresInMinutes: 10 });
+  });
+  app.post('/api/screens/pair', requireAdult, (req, res) => {
+    const name = text(req.body.name, 60) || 'Wall display';
+    if (!approveDisplayPairing(db, req.auth.household_id, req.body.code, name)) return res.status(400).json({ error: 'The pairing code is invalid or expired.' });
+    res.json({ ok: true });
   });
   app.put('/api/household/week-start', requireAdult, (req, res) => {
     const weekStartsOn = +req.body.weekStartsOn;

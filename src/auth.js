@@ -75,6 +75,63 @@ export function createPairingCode(db, householdId, minutes = 10) {
   return code;
 }
 
+const DISPLAY_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+function displayPairCode() {
+  return [...crypto.randomBytes(8)].map((byte) => DISPLAY_CODE_ALPHABET[byte % DISPLAY_CODE_ALPHABET.length]).join('');
+}
+
+/** Normalize a code read from a screen. Returns null when the shape is wrong. */
+export function normalizeDisplayCode(value) {
+  const code = typeof value === 'string' ? value.replace(/[\s-]/g, '').toUpperCase() : '';
+  return /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/.test(code) ? code : null;
+}
+
+/**
+ * Start a screen-initiated pairing.
+ * The screen shows the short code. Only the screen keeps the secret used to collect the session.
+ */
+export function createDisplayPairing(db, minutes = 10) {
+  const now = new Date().toISOString();
+  db.prepare('DELETE FROM display_pairings WHERE expires_at<=? AND claimed_at IS NULL').run(now);
+  if (db.prepare('SELECT COUNT(*) AS count FROM display_pairings WHERE expires_at>? AND claimed_at IS NULL').get(now).count >= 20) return null;
+  const code = displayPairCode();
+  const secret = randomToken(32);
+  const expiresAt = new Date(Date.now() + minutes * 60000).toISOString();
+  db.prepare('INSERT INTO display_pairings(user_code_hash,device_secret_hash,expires_at) VALUES (?,?,?)').run(digest(code), digest(secret), expiresAt);
+  return { code, secret, expiresAt };
+}
+
+/** Bind a screen code to the approving adult's household. The code alone does not create a session. */
+export function approveDisplayPairing(db, householdId, code, deviceName) {
+  const normalized = normalizeDisplayCode(code);
+  const name = typeof deviceName === 'string' && deviceName.trim() && deviceName.trim().length <= 60 ? deviceName.trim() : 'Wall display';
+  if (!normalized) return false;
+  const row = db.prepare('SELECT * FROM display_pairings WHERE user_code_hash=?').get(digest(normalized));
+  const now = new Date().toISOString();
+  if (!row || row.claimed_at || row.expires_at <= now) return false;
+  if (row.approved_at && row.household_id !== householdId) return false;
+  const result = db.prepare(`UPDATE display_pairings
+    SET household_id=?, device_name=?, approved_at=COALESCE(approved_at, ?)
+    WHERE id=? AND claimed_at IS NULL AND (approved_at IS NULL OR household_id=?)`).run(householdId, name, now, row.id, householdId);
+  return result.changes === 1;
+}
+
+/**
+ * Give the session only to the screen that holds the secret.
+ * A second claim does not issue another session.
+ */
+export function claimDisplayPairing(db, secret) {
+  if (typeof secret !== 'string' || secret.length < 20 || secret.length > 80) return { status: 'expired' };
+  const row = db.prepare('SELECT * FROM display_pairings WHERE device_secret_hash=?').get(digest(secret));
+  const now = new Date().toISOString();
+  if (!row || row.expires_at <= now) return { status: 'expired' };
+  if (!row.approved_at || !row.household_id) return { status: 'pending' };
+  const claim = db.prepare('UPDATE display_pairings SET claimed_at=? WHERE id=? AND claimed_at IS NULL').run(now, row.id);
+  if (!claim.changes) return { status: 'paired', already: true };
+  return { status: 'paired', householdId: row.household_id, deviceName: row.device_name || 'Wall display' };
+}
+
 export function requireAdult(req, res, next) {
   if (req.auth.kind !== 'user' || req.auth.role !== 'adult') return res.status(403).json({ error: 'An adult account is required.' });
   next();
