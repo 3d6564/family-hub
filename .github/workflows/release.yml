@@ -1,0 +1,180 @@
+name: Release
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version without the v prefix, such as 0.2.0
+        required: true
+        type: string
+      prerelease:
+        description: Publish as a prerelease and do not move stable
+        required: false
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  test:
+    if: github.repository == '3d6564/family-hub'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = workflow_dispatch ]; then
+            version="${{ inputs.version }}"
+            prerelease="${{ inputs.prerelease }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+            prerelease=false
+          fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          [[ "$version" == *-* ]] && prerelease=true
+          test "$(node -p 'require("./package.json").version')" = "$version"
+          notes="docs/releases/$version.md"
+          test -f "$notes"
+          for heading in "## Changes" "## Setup changes" "## Database migrations" "## Rollback" "## Verification"; do
+            grep -Fq "$heading" "$notes"
+          done
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      created: ${{ steps.meta.outputs.created }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        shell: bash
+        run: echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ghcr.io/3d6564/family-hub:sha-${{ github.sha }}
+          build-args: |
+            FAMILY_HUB_VERSION=${{ needs.test.outputs.version }}
+            FAMILY_HUB_REVISION=${{ github.sha }}
+            FAMILY_HUB_CREATED=${{ steps.meta.outputs.created }}
+            FAMILY_HUB_CHANNEL=release
+          labels: |
+            org.opencontainers.image.title=Family Hub
+            org.opencontainers.image.source=https://github.com/3d6564/family-hub
+            org.opencontainers.image.version=${{ needs.test.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
+  smoke:
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+    steps:
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.platform == 'linux/arm64'
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/3d6564/family-hub:sha-${GITHUB_SHA}"
+          docker pull --platform "${{ matrix.platform }}" "$image"
+          docker run --detach --name smoke --platform "${{ matrix.platform }}" --publish 3000:3000 "$image"
+          ready=false
+          for _ in $(seq 1 90); do
+            if curl --fail --silent http://127.0.0.1:3000/health/ready; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          docker logs smoke
+          test "$ready" = true
+          version="$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' smoke)"
+          revision="$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' smoke)"
+          created="$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.created"}}' smoke)"
+          test "$version" = "${{ needs.test.outputs.version }}"
+          test "$revision" = "$GITHUB_SHA"
+          test "$created" = "${{ needs.build.outputs.created }}"
+          docker rm --force smoke
+  publish:
+    needs: [test, build, smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - shell: bash
+        env:
+          VERSION: ${{ needs.test.outputs.version }}
+          PRERELEASE: ${{ needs.test.outputs.prerelease }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          source="ghcr.io/3d6564/family-hub@${DIGEST}"
+          target="ghcr.io/3d6564/family-hub:${VERSION}"
+          if docker buildx imagetools inspect "$target" >/dev/null 2>&1; then
+            echo "Version tag ${VERSION} already exists."
+            exit 1
+          fi
+          docker buildx imagetools create --tag "$target" "$source"
+          docker buildx imagetools inspect "$target" | grep -F "linux/amd64"
+          docker buildx imagetools inspect "$target" | grep -F "linux/arm64"
+          notes_args=(--title "v${VERSION}" --notes-file "docs/releases/${VERSION}.md")
+          if [ "$PRERELEASE" = true ]; then
+            notes_args+=(--prerelease)
+          fi
+          gh release create "v${VERSION}" "${notes_args[@]}"
+          if [ "$PRERELEASE" != true ]; then
+            docker buildx imagetools create --tag ghcr.io/3d6564/family-hub:stable "$source"
+          fi

@@ -37,6 +37,12 @@ as development builds, not published releases.
 
 Do not publish the release or move `stable` after a failed check.
 
+`.github/workflows/release.yml` runs this order for a `v*` tag or a manual
+run. Put the required notes in `docs/releases/<version>.md` before tagging.
+The workflow checks that file, builds both architectures, smoke-tests the
+image, and only then creates the version tag, GitHub release, and `stable`
+tag. A prerelease does not move `stable`. The workflow does not deploy a host.
+
 ## Database rollback
 
 Startup applies pending migrations before the container becomes healthy. Each
