@@ -394,6 +394,36 @@ test('one feed failure does not hide local reminders or other feed events', asyn
   assert.deepEqual(body.errors, [{ feedId: 1, calendar: 'Broken', message: 'Could not load Broken: invalid calendar data' }]);
 });
 
+test('the kiosk origin keeps secure cookies and rejects a different HTTP origin', async (t) => {
+  const previousOrigin = process.env.APP_ORIGIN, previousAllowed = process.env.ALLOWED_ORIGINS;
+  process.env.APP_ORIGIN = 'https://hub.example.test';
+  process.env.ALLOWED_ORIGINS = 'https://hub.example.test';
+  t.after(() => {
+    previousOrigin === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previousOrigin;
+    previousAllowed === undefined ? delete process.env.ALLOWED_ORIGINS : process.env.ALLOWED_ORIGINS = previousAllowed;
+  });
+  const db = database(), home = household(db, 'Home'), password = await hashPassword('a secure password');
+  db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'kiosk@example.test', 'Adult', password);
+  const code = createPairingCode(db, home);
+  const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); });
+  await new Promise((resolve) => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const httpsHeaders = { 'content-type': 'application/json', origin: 'https://hub.example.test', 'x-csrf-token': '1' };
+  const login = await fetch(`${base}/api/login`, { method: 'POST', headers: httpsHeaders, body: JSON.stringify({ email: 'kiosk@example.test', password: 'a secure password' }) });
+  assert.equal(login.status, 200);
+  assert.match(login.headers.get('set-cookie'), /Secure/);
+  const pair = await fetch(`${base}/api/pair`, { method: 'POST', headers: httpsHeaders, body: JSON.stringify({ code, name: 'Wall' }) });
+  assert.equal(pair.status, 200);
+  assert.match(pair.headers.get('set-cookie'), /family_device_session=.*Secure/);
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  assert.equal((await fetch(`${base}/api/logout`, { method: 'POST', headers: { origin: 'http://127.0.0.1:3000', 'x-csrf-token': '1', cookie } })).status, 403);
+  process.env.APP_ORIGIN = 'http://localhost:3000';
+  process.env.ALLOWED_ORIGINS = 'http://localhost:3000';
+  const local = await fetch(`${base}/api/login`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://localhost:3000', 'x-csrf-token': '1' }, body: JSON.stringify({ email: 'kiosk@example.test', password: 'a secure password' }) });
+  assert.equal(local.status, 200);
+  assert.doesNotMatch(local.headers.get('set-cookie'), /Secure/);
+});
+
 test('household APIs do not allow cross-household item changes', async (t) => {
   const db = database(), first = household(db, 'First'), second = household(db, 'Second');
   const password = await hashPassword('a secure password');

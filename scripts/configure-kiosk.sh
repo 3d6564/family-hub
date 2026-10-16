@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-url=${1:-http://localhost:3000/}
+origin=${APP_ORIGIN:-}
+url=${1:-${origin:-http://localhost:3000/}}
+if [[ $origin == https://* && $url != "$origin" && $url != "$origin/" ]]; then
+  printf 'The kiosk must open %s. Do not use a different HTTP address after HTTPS is enabled.\n' "$origin" >&2
+  exit 1
+fi
 config_dir=${XDG_CONFIG_HOME:-$HOME/.config}/labwc
 autostart=$config_dir/autostart
 rcxml=$config_dir/rc.xml
