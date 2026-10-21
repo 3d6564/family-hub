@@ -11,6 +11,21 @@ marker='# Family Hub kiosk'
 end_marker='# End Family Hub kiosk'
 existing=false
 [[ -f $unit || -f $wrapper || -f $url_file ]] && existing=true
+changed=false
+staging=$(mktemp -d)
+trap 'rm -rf "$staging"' EXIT
+
+# Compare generated files so an automation run does not interrupt the display.
+install_changed() {
+  local source=$1 destination=$2 mode=$3
+  if ! cmp -s "$source" "$destination"; then
+    install -m "$mode" "$source" "$destination"
+    changed=true
+  elif [[ $(stat -c '%a' "$destination") != "$mode" ]]; then
+    chmod "$mode" "$destination"
+    changed=true
+  fi
+}
 
 saved_url=
 if [[ -f $url_file ]]; then
@@ -47,10 +62,10 @@ if [[ -z $chromium_bin ]]; then
   chromium_bin=$(command -v chromium || command -v chromium-browser)
 fi
 
-printf '%s\n' "$url" >"$url_file"
-chmod 600 "$url_file"
+printf '%s\n' "$url" >"$staging/url"
+install_changed "$staging/url" "$url_file" 600
 
-cat >"$wrapper" <<EOF
+cat >"$staging/display.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 runtime=\${XDG_RUNTIME_DIR:-/run/user/\$(id -u)}
@@ -71,9 +86,9 @@ if [[ -n \${WAYLAND_DISPLAY:-} ]]; then
 fi
 exec "\$bin" "\${args[@]}" $(printf '%q' "$url")
 EOF
-chmod 700 "$wrapper"
+install_changed "$staging/display.sh" "$wrapper" 700
 
-cat >"$unit" <<EOF
+cat >"$staging/display.service" <<EOF
 [Unit]
 Description=Family Hub display
 After=graphical-session.target
@@ -87,6 +102,7 @@ RestartSec=3
 [Install]
 WantedBy=graphical-session.target
 EOF
+install_changed "$staging/display.service" "$unit" 644
 
 if [[ -f $autostart ]] && grep -Fq "$marker" "$autostart"; then
   retained=$(mktemp)
@@ -103,14 +119,24 @@ if [[ -f $autostart ]] && grep -Fq "$marker" "$autostart"; then
     $in_block || printf '%s\n' "$entry" >>"$retained"
   done <"$autostart"
   mv "$retained" "$autostart"
+  changed=true
 fi
 
-systemctl --user daemon-reload
-systemctl --user enable family-hub-display.service
-if [[ $existing == true ]]; then
+if [[ $changed == true ]]; then
+  systemctl --user daemon-reload
+fi
+if ! systemctl --user is-enabled --quiet family-hub-display.service; then
+  systemctl --user enable family-hub-display.service
+  changed=true
+fi
+if [[ $changed == true && $existing == true ]]; then
   systemctl --user restart family-hub-display.service
   printf 'Updated the Family Hub display for %s. The browser profile was kept.\n' "$url"
-else
+elif ! systemctl --user is-active --quiet family-hub-display.service; then
   systemctl --user start family-hub-display.service
+  changed=true
   printf 'Installed the Family Hub display for %s. The browser restarts if it exits.\n' "$url"
+else
+  printf 'The Family Hub display is already running for %s.\n' "$url"
 fi
+printf 'Family Hub display changed: %s\n' "$changed"
