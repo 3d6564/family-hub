@@ -128,8 +128,13 @@ fi
 # Match the account, browser name, kiosk flag, exact profile, and old URL.
 # Never stop the current service's browser or use a broad Chromium process kill.
 if $labwc_startup && [[ -n $legacy_url ]] && grep -Fq -- '--kiosk' "$staging/legacy-block" && grep -Fq -- '.config/family-hub-kiosk' "$staging/legacy-block"; then
+  # Chromium can move its main process to a desktop scope. The service's
+  # tracked MainPID still belongs to this installer even outside its group.
+  systemctl --user show --property=Version >/dev/null
+  current_service_pid=$(systemctl --user show family-hub-display.service --property=MainPID --value 2>/dev/null || true)
   for process in /proc/[0-9]*; do
     [[ -O $process ]] || continue
+    [[ ${process##*/} != "$current_service_pid" ]] || continue
     if ! mapfile -d '' -t arguments 2>/dev/null <"$process/cmdline"; then
       continue
     fi

@@ -50,7 +50,9 @@ When an older block directly launches Chromium, cleanup sends a termination
 signal only to matching processes owned by the current account. A process must
 have a Chromium browser name, `--kiosk`, the exact
 `--user-data-dir=$HOME/.config/family-hub-kiosk` argument, and the URL saved in
-that older block. The current `family-hub-display.service` is excluded. Cleanup
+that older block. The current `family-hub-display.service` main process and
+process group are excluded, including when Chromium moves its main process to
+a separate desktop scope. Cleanup
 waits up to ten seconds for a matching process to exit and stops installation
 if it does not exit. It does not force-kill browsers or remove profile files.
 

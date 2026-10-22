@@ -32,6 +32,7 @@ case "$2" in
   is-active) test -f "$HOME/active" ;;
   enable) touch "$HOME/enabled" ;;
   start|restart) touch "$HOME/active" ;;
+  show) if [[ -f $HOME/current-main-pid ]]; then cat "$HOME/current-main-pid"; else printf '0\n'; fi ;;
 esac
 EOF
 chmod +x "$HOME/bin/chromium" "$HOME/bin/systemctl"
@@ -131,6 +132,11 @@ start_browser "$HOME/regular-ready" "--user-data-dir=$HOME/.config/family-hub-ki
 regular_pid=$browser_pid
 start_browser "$HOME/other-url-ready" --kiosk "--user-data-dir=$HOME/.config/family-hub-kiosk" https://different.example/
 other_url_pid=$browser_pid
+# Chromium can move its main process into a desktop scope while systemd still
+# tracks that process as the display service's MainPID.
+start_browser "$HOME/tracked-ready" --kiosk "--user-data-dir=$HOME/.config/family-hub-kiosk" https://legacy.example/
+tracked_pid=$browser_pid
+printf '%s\n' "$tracked_pid" >"$HOME/current-main-pid"
 cat >"$XDG_CONFIG_HOME/labwc/autostart" <<'EOF'
 : keep-before
 # Family Hub kiosk
@@ -148,6 +154,7 @@ wait "$legacy_pid"
 kill -0 "$unrelated_pid"
 kill -0 "$regular_pid"
 kill -0 "$other_url_pid"
+kill -0 "$tracked_pid"
 expect '^: keep-before$' "$XDG_CONFIG_HOME/labwc/autostart"
 expect '^: keep-after$' "$XDG_CONFIG_HOME/labwc/autostart"
 expect '^test pairing state$' "$XDG_CONFIG_HOME/family-hub-kiosk/pairing"
