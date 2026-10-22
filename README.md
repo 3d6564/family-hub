@@ -38,6 +38,10 @@ automatically. Known older kiosk startup entries are migrated. See the
 [display automation guide](docs/display-automation.md) to use this installer
 with Ansible or another host tool.
 
+Use `--check` to preview changes and `--json` for structured automation results.
+Every run checks for supported prior installs. The installed display version is
+recorded separately from the application version.
+
 ## Develop locally
 
 Requirements: Node.js 22 and npm.

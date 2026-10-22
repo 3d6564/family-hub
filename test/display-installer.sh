@@ -89,7 +89,7 @@ mkdir -p "$XDG_CONFIG_HOME/labwc"
 cat >"$XDG_CONFIG_HOME/labwc/autostart" <<'EOF'
 keep-before
 # Family Hub kiosk
-old-browser-command
+chromium --user-data-dir="$HOME/.config/family-hub-kiosk" --kiosk https://old-kiosk.example/
 # End Family Hub kiosk
 keep-after
 EOF
@@ -97,7 +97,7 @@ run_installer
 expect '--user restart family-hub-display.service' "$HOME/calls"
 expect '^keep-before$' "$XDG_CONFIG_HOME/labwc/autostart"
 expect '^keep-after$' "$XDG_CONFIG_HOME/labwc/autostart"
-if grep -q 'old-browser-command' "$XDG_CONFIG_HOME/labwc/autostart"; then
+if grep -q 'old-kiosk.example' "$XDG_CONFIG_HOME/labwc/autostart"; then
   printf 'The legacy kiosk block was not removed.\n' >&2
   exit 1
 fi
@@ -145,6 +145,19 @@ cat >"$XDG_CONFIG_HOME/labwc/autostart" <<'EOF'
 : keep-after
 EOF
 chmod 755 "$XDG_CONFIG_HOME/labwc/autostart"
+cp "$XDG_CONFIG_HOME/labwc/autostart" "$HOME/before-preview"
+run_installer --check --json https://updated.example/
+expect '"mode":"check"' "$HOME/output"
+expect '"changed":false' "$HOME/output"
+expect '"would_change":true' "$HOME/output"
+expect '"legacy_processes":1' "$HOME/output"
+kill -0 "$legacy_pid"
+kill -0 "$tracked_pid"
+cmp "$HOME/before-preview" "$XDG_CONFIG_HOME/labwc/autostart"
+if grep -Eq -- '--user (daemon-reload|restart|start|enable)($| )' "$HOME/calls"; then
+  printf 'Preview changed the display service.\n' >&2
+  exit 1
+fi
 run_installer https://updated.example/
 if kill -0 "$legacy_pid" 2>/dev/null; then
   printf 'The matching legacy kiosk was not stopped.\n' >&2
@@ -204,4 +217,69 @@ fi
 cmp "$HOME/original-autostart" "$XDG_CONFIG_HOME/labwc/autostart"
 expect 'Repair its markers' "$HOME/error"
 test ! -e "$XDG_CONFIG_HOME/family-hub/url"
+
+# Preview a first install without creating a configuration directory.
+export XDG_CONFIG_HOME=$workspace/preview-config
+run_installer --check --json https://preview.example/
+expect '"status":"ok"' "$HOME/output"
+expect '"mode":"check"' "$HOME/output"
+expect '"changed":false' "$HOME/output"
+expect '"would_change":true' "$HOME/output"
+expect '"installed_version":"none"' "$HOME/output"
+test "$(wc -l <"$HOME/output")" = 1
+test ! -e "$XDG_CONFIG_HOME"
+if grep -Eq -- '--user (daemon-reload|restart|start|enable)($| )' "$HOME/calls"; then
+  printf 'Fresh-install preview changed the display service.\n' >&2
+  exit 1
+fi
+
+run_installer --json https://preview.example/
+expect '"status":"ok"' "$HOME/output"
+expect '"changed":true' "$HOME/output"
+expect '"installed_version":"1"' "$HOME/output"
+expect '^1$' "$XDG_CONFIG_HOME/family-hub/install-version"
+test "$(wc -l <"$HOME/output")" = 1
+run_installer --check --json
+expect '"would_change":false' "$HOME/output"
+
+# Adopt a recognized pre-version-record install without restarting its browser.
+rm "$XDG_CONFIG_HOME/family-hub/install-version"
+run_installer --json
+expect '"changed":true' "$HOME/output"
+expect '"migration_required":true' "$HOME/output"
+expect '"configuration_change_required":false' "$HOME/output"
+expect '"service_action":"none"' "$HOME/output"
+if grep -Eq -- '--user (daemon-reload|restart|start|enable)($| )' "$HOME/calls"; then
+  printf 'Recording an install version interrupted an unchanged display.\n' >&2
+  exit 1
+fi
+run_installer --json
+expect '"changed":false' "$HOME/output"
+expect '"migration_required":false' "$HOME/output"
+
+# A newer version or an unrecognized owned file must not be overwritten.
+printf '2\n' >"$XDG_CONFIG_HOME/family-hub/install-version"
+cp "$XDG_CONFIG_HOME/family-hub/display.sh" "$HOME/before-unsupported-version"
+status=0
+bash "$installer" --json >"$HOME/output" 2>"$HOME/error" || status=$?
+test "$status" = 1
+expect '"status":"error"' "$HOME/output"
+expect '"phase":"inspect"' "$HOME/output"
+expect '^2$' "$XDG_CONFIG_HOME/family-hub/install-version"
+cmp "$HOME/before-unsupported-version" "$XDG_CONFIG_HOME/family-hub/display.sh"
+printf '1\n' >"$XDG_CONFIG_HOME/family-hub/install-version"
+printf '#!/bin/sh\necho custom-launcher\n' >"$XDG_CONFIG_HOME/family-hub/display.sh"
+cp "$XDG_CONFIG_HOME/family-hub/display.sh" "$HOME/custom-wrapper"
+status=0
+bash "$installer" --json >"$HOME/output" 2>"$HOME/error" || status=$?
+test "$status" = 1
+expect '"status":"error"' "$HOME/output"
+expect 'wrapper is unrecognized' "$HOME/error"
+cmp "$HOME/custom-wrapper" "$XDG_CONFIG_HOME/family-hub/display.sh"
+
+status=0
+bash "$installer" --json --unknown-option >"$HOME/output" 2>"$HOME/error" || status=$?
+test "$status" = 2
+expect '"status":"error"' "$HOME/output"
+expect '"phase":"arguments"' "$HOME/output"
 printf 'Display installer tests passed.\n'
