@@ -33,7 +33,8 @@ Use the same address as `SITE_URL`. To read the script first, save it, then run 
 The screen shows a code. On your phone, open **Settings**, then **Screens**, and enter the code. The screen does not need a keyboard. Run the installer again to update it. Leave the address off to keep the current one.
 
 An unchanged running display is left running. Configuration changes restart the
-browser without removing its profile or pairing. See the
+browser without removing its profile or pairing. Labwc startup is configured
+automatically. Known older kiosk startup entries are migrated. See the
 [display automation guide](docs/display-automation.md) to use this installer
 with Ansible or another host tool.
 
