@@ -22,13 +22,16 @@ See the [published image guide](docs/published-image.md) and the [update and rec
 
 The display computer only runs Chromium. It does not run the application.
 
-On the signed-in graphical account, run:
+Download `install-display.sh` and `install-display.sh.sha256` from a selected
+[release with display assets](https://github.com/3d6564/family-hub/releases).
+On the signed-in graphical account, verify and run the saved installer:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/3d6564/family-hub/main/scripts/install-display.sh | bash -s -- http://hub.home.example:3000/
+sha256sum -c install-display.sh.sha256
+bash install-display.sh http://hub.home.example:3000/
 ```
 
-Use the same address as `SITE_URL`. To read the script first, save it, then run `./install-display.sh` with that address.
+Use the same address as `SITE_URL`. Read the saved script before running it.
 
 The screen shows a code. On your phone, open **Settings**, then **Screens**, and enter the code. The screen does not need a keyboard. Run the installer again to update it. Leave the address off to keep the current one.
 

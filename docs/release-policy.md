@@ -32,7 +32,8 @@ as development builds, not published releases.
 3. Build AMD64 and ARM64 images.
 4. Push and verify the immutable version tag, manifest, metadata, and smoke
    tests.
-5. Publish the GitHub release.
+5. Package the display installer, upload its assets to a draft GitHub release,
+   download and verify those assets, then publish the release.
 6. Move `stable` to the verified image digest.
 
 Do not publish the release or move `stable` after a failed check.
@@ -42,6 +43,33 @@ run. Put the required notes in `docs/releases/<version>.md` before tagging.
 The workflow checks that file, builds both architectures, smoke-tests the
 image, and only then creates the version tag, GitHub release, and `stable`
 tag. A prerelease does not move `stable`. The workflow does not deploy a host.
+
+## Display installer assets
+
+Each new release includes:
+
+- `install-display.sh`: the tested standalone installer, with unchanged source
+  bytes.
+- `install-display.sh.sha256`: the SHA-256 and fixed installer filename.
+- `display-installer.json`: schema version `1`, release tag, full tested commit,
+  installer name/checksum, and checksum filename.
+
+`scripts/package-display-release.js` creates these files without dependencies.
+The release tag must match `package.json`. The workflow targets the tested
+commit explicitly, uploads the files while the release is a draft, and compares
+the downloaded files with the packaged bytes before publishing. A failed asset
+check leaves the release unpublished and does not move `stable`.
+
+Releases published before these assets were introduced do not support this
+display installation method. Do not replace an existing release or fabricate
+missing assets from a different commit.
+
+Host tools can discover the latest stable release or select a fixed stable tag.
+They must verify the installer checksum and retain the resolved release for
+apply. A newly published release must not change an already previewed plan.
+Publishing a display installer does not deploy either the display or the
+application server. The installer's configuration-format version remains
+separate from the release tag.
 
 ## Database rollback
 

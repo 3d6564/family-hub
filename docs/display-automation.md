@@ -11,8 +11,10 @@ login/startup verification.
 
 ## Run from a host tool
 
-1. Select a reviewed Family Hub commit and copy its installer to the host.
-   Record the commit and the installer's SHA-256 checksum. Avoid downloading
+1. Select a published Family Hub release with display installer assets.
+   Download `install-display.sh`, `install-display.sh.sha256`, and
+   `display-installer.json` from that same release. Verify the checksum, release
+   tag, and commit before copying the installer to the host. Avoid downloading
    `main` during each automated run.
 2. Install Chromium with the host's package tool.
 3. Sign in to the display's graphical desktop. Run the installer as that
@@ -91,6 +93,17 @@ host tool, or a future device-install feature can deliver and call the same
 script. The caller owns remote access and job delivery. The installer owns
 inspection, supported migration, display configuration, and service checks.
 It does not need access to the Family Hub database.
+
+Release selection belongs to the caller. A caller can check GitHub's latest
+stable release or pin a stable tag, but preview and apply must use the same
+resolved installer. Keep the verified bytes and a saved plan for each device;
+do not look up "latest" again during apply. Serialize deployment jobs for the
+same display. The Labgeek integration supports saved, immutable release plans.
+
+The standalone installer still works when called manually or by another tool.
+It records its display configuration format, not an application release tag.
+Host tools can record release provenance alongside the installed script and
+compare its actual checksum before claiming which release is installed.
 
 ```sh
 # Inspect and preview without changing the display.
