@@ -8,10 +8,17 @@ Keep one settings tab for each independently configured household concern:
 - **Screens**: screen pairing approval, paired display resolutions, last-seen status, and calendar previews.
 - **Calendars**: week start and read-only iCal feeds.
 - **Routines**: household start times for Morning, Afternoon, and Bedtime.
-- **Weather**: forecast visibility, location, units, day count, display choices, and one saved key per provider.
+- **Weather**: forecast visibility, location, units, day count, refresh interval, display choices, and one saved key per provider.
 - **Household**: family members and their roles.
 - **Access**: passwords, paired-display revocation, and sign-out.
 - **Integrations**: available and planned outside-service connections.
+
+Weather refresh defaults to 30 minutes for new and existing households. Adults
+can select 15 minutes, 30 minutes, 1 hour, or 3 hours in Settings > Weather.
+The server refreshes expired weather when a dashboard request arrives. Active
+displays request the dashboard about every 5 minutes. Faster intervals increase
+provider API use; one refresh can make several requests. Provider failures keep
+the last saved forecast visible.
 
 An integration has a dedicated card in the Integrations tab. The card shows its connection state, the source of truth, the selected data, and an enable switch. Do not show an enable switch for a planned integration. Enable it only after configuration is valid.
 

@@ -1,5 +1,5 @@
 const conditions = new Set(['clear', 'cloudy', 'rain', 'storm', 'snow', 'unknown']);
-const cacheHours = 3;
+const refreshChoices = new Set([15, 30, 60, 180]);
 const providers = new Set(['openweathermap', 'open-meteo', 'weatherapi', 'pirateweather']);
 const providerDayLimit = { openweathermap: 5, 'open-meteo': 7, weatherapi: 7, pirateweather: 7 };
 const usStates = {
@@ -16,6 +16,12 @@ const usStates = {
 /** Return the supported weather provider ids. */
 export function weatherProviderIds() {
   return [...providers];
+}
+
+/** Return a supported forecast refresh interval in minutes, or the fallback. */
+export function weatherRefreshMinutes(value, fallback = 30) {
+  const minutes = Number(value);
+  return Number.isInteger(minutes) && refreshChoices.has(minutes) ? minutes : fallback;
 }
 
 /** Map an OpenWeatherMap condition id to a Family Hub icon name. */
@@ -372,7 +378,7 @@ export async function currentForecast(db, household, fetchForecast, now = new Da
     if (!cached) return null;
     try { return presentForecast(JSON.parse(cached.payload), household); } catch { return null; }
   };
-  const freshEnough = cached && now - new Date(cached.fetched_at) < cacheHours * 60 * 60 * 1000;
+  const freshEnough = cached && now - new Date(cached.fetched_at) < weatherRefreshMinutes(household.weather_refresh_minutes) * 60 * 1000;
   if (freshEnough) return readCached();
   const { provider, apiKey } = providerKey(db, household);
   if (!provider || (provider !== 'open-meteo' && !apiKey) || typeof fetchForecast !== 'function') return readCached();

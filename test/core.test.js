@@ -12,7 +12,7 @@ import { assertSafeRemoteUrl, parseFeedEvents, validateFeedUrl } from '../src/ic
 import { createApp } from '../src/app.js';
 import { releaseInfo } from '../src/release.js';
 import { compareVersions, createUpdateChecker } from '../src/updates.js';
-import { forecastFromOpenWeather, locationQueries, openMeteoCondition, pirateCondition, publicForecast, weatherApiCondition, weatherCondition } from '../src/weather.js';
+import { currentForecast, forecastFromOpenWeather, locationQueries, openMeteoCondition, pirateCondition, publicForecast, weatherApiCondition, weatherCondition, weatherRefreshMinutes } from '../src/weather.js';
 import { approveDisplayPairing, claimDisplayPairing, createDisplayPairing, createPairingCode, createSession, digest, hashPassword, verifyPassword } from '../src/auth.js';
 
 function database() { return openDatabase(':memory:'); }
@@ -23,7 +23,7 @@ test('release metadata stays adult-only and marks local builds as development', 
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   t.after(() => keys.forEach((key) => previous[key] === undefined ? delete process.env[key] : process.env[key] = previous[key]));
   for (const key of keys) delete process.env[key];
-  assert.deepEqual(releaseInfo(), { version: '0.3.2', revision: null, created: null, channel: 'development' });
+  assert.deepEqual(releaseInfo(), { version: '0.3.3', revision: null, created: null, channel: 'development' });
   const db = database(), home = household(db, 'Home'), password = await hashPassword('a secure password');
   const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'release@example.test', 'Adult', password).lastInsertRowid);
   const adultToken = createSession(db, { householdId: home, userId: adult });
@@ -173,7 +173,7 @@ test('a completed one-time chore leaves the list and yesterday does not count to
   db.prepare('UPDATE households SET timezone=? WHERE id=?').run('UTC', home);
   const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'tasks@example.test', 'Adult', password).lastInsertRowid);
   const once = Number(db.prepare("INSERT INTO chores(household_id,title,recurrence,due_on) VALUES (?,?,'once','2026-09-29')").run(home, 'One poster').lastInsertRowid);
-  const daily = Number(db.prepare("INSERT INTO chores(household_id,title,recurrence,due_on,days) VALUES (?,?,'daily','2026-09-28','1,2,3,4,5')").run(home, 'Make bed').lastInsertRowid);
+  const daily = Number(db.prepare("INSERT INTO chores(household_id,title,recurrence,due_on,days) VALUES (?,?,'daily','2026-09-28','0,1,2,3,4,5,6')").run(home, 'Make bed').lastInsertRowid);
   db.prepare('INSERT INTO chore_completions(chore_id,period_key) VALUES (?,?)').run(daily, '2026-09-28');
   const token = createSession(db, { householdId: home, userId: adult });
   const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); });
@@ -320,6 +320,8 @@ test('weather settings hide the API key and use OpenWeatherMap', async (t) => {
   assert.equal(listed.provider, 'openweathermap');
   assert.equal(listed.keys.openweathermap, 'secret-weather-key');
   assert.equal(listed.days, 5);
+  assert.equal(listed.refreshMinutes, 30);
+  assert.equal(saved.refreshMinutes, 30);
   const shown = await (await fetch(`${base}/api/dashboard`, { headers })).json();
   assert.equal(shown.weather.days.length, 5);
   assert.equal(shown.weather.days[0].high, 70);
@@ -344,11 +346,35 @@ test('weather settings hide the API key and use OpenWeatherMap', async (t) => {
   assert.equal(short.weather.show.precip, true);
   assert.equal(publicForecast({ place: 'Chicago', units: 'f', days: [{ label: 'Fri', condition: 'clear', high: 70, low: 50, precip: 12.4 }] }).days[0].precip, 12);
   assert.equal((await fetch(`${base}/api/household/weather`, { method: 'PUT', headers, body: JSON.stringify({ enabled: true, provider: 'weatherapi', keys: { weatherapi: '' } }) })).status, 400);
+  assert.equal((await fetch(`${base}/api/household/weather`, { method: 'PUT', headers, body: JSON.stringify({ refreshMinutes: 10 }) })).status, 400);
+  const faster = await (await fetch(`${base}/api/household/weather`, { method: 'PUT', headers, body: JSON.stringify({ refreshMinutes: 15 }) })).json();
+  assert.equal(faster.refreshMinutes, 15);
+  assert.equal(db.prepare('SELECT weather_refresh_minutes FROM households WHERE id=?').get(home).weather_refresh_minutes, 15);
   const deviceHeaders = { cookie: `family_device_session=${createSession(db, { householdId: home, kind: 'device', deviceName: 'Wall' })}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1' };
   assert.equal((await fetch(`${base}/api/household/weather`, { headers: deviceHeaders })).status, 403);
   const wall = await (await fetch(`${base}/api/dashboard`, { headers: deviceHeaders })).json();
   assert.equal(JSON.stringify(wall).includes('secret-weather-key'), false);
   assert.equal(JSON.stringify(wall).includes('pirate-key'), false);
+});
+
+test('weather cache follows the household refresh interval', async () => {
+  assert.equal(weatherRefreshMinutes(15), 15);
+  assert.equal(weatherRefreshMinutes('nope'), 30);
+  const db = database(), home = household(db, 'Home');
+  db.prepare("UPDATE households SET weather_enabled=1,weather_location='Chicago',weather_units='f',weather_provider='open-meteo',weather_refresh_minutes=15 WHERE id=?").run(home);
+  const row = db.prepare('SELECT * FROM households WHERE id=?').get(home);
+  let calls = 0;
+  const fetchForecast = async () => {
+    calls += 1;
+    return { place: 'Chicago', units: 'f', days: [{ label: 'Fri', condition: 'clear', high: 70, low: 50 }] };
+  };
+  const first = new Date('2026-10-25T12:00:00Z');
+  assert.equal((await currentForecast(db, row, fetchForecast, first)).days[0].high, 70);
+  await currentForecast(db, row, fetchForecast, new Date(first.getTime() + 14 * 60 * 1000));
+  assert.equal(calls, 1);
+  await currentForecast(db, row, fetchForecast, new Date(first.getTime() + 15 * 60 * 1000));
+  assert.equal(calls, 2);
+  db.close();
 });
 
 test('adults can reorder every routine in their household', async (t) => {

@@ -11,7 +11,7 @@ import { fetchFeedEvents, validateFeedUrl } from './ical.js';
 import { ensureTokenLedger, postChoreEarning, reverseChoreEarning, tokenLedger, tokenStatus, TokenError, withdrawTokens } from './tokens.js';
 import { releaseInfo } from './release.js';
 import { createUpdateChecker } from './updates.js';
-import { currentForecast, fetchWeather, weatherProviderIds } from './weather.js';
+import { currentForecast, fetchWeather, weatherProviderIds, weatherRefreshMinutes } from './weather.js';
 
 const publicDir = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'public');
 const clients = new Map();
@@ -192,7 +192,7 @@ export function createApp(db, dependencies = {}) {
 
   app.get('/api/dashboard', asyncRoute(async (req, res) => {
     const h = req.auth.household_id;
-    const household = db.prepare(`SELECT id,timezone,weather_enabled,weather_location,weather_units,weather_api_key,weather_provider,weather_days,
+    const household = db.prepare(`SELECT id,timezone,weather_enabled,weather_location,weather_units,weather_api_key,weather_provider,weather_days,weather_refresh_minutes,
       weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?`).get(h);
     const today = localDate(new Date(), household.timezone);
     const routines = db.prepare(`SELECT r.id,r.title,r.days,r.period,r.sort_order,a.child_id,u.name child_name,EXISTS(SELECT 1 FROM routine_completions c WHERE c.routine_id=r.id AND c.child_id=a.child_id AND c.completed_on=?) completed
@@ -301,26 +301,28 @@ export function createApp(db, dependencies = {}) {
   }
   function weatherSettings(row, keys) {
     return {
-      enabled: !!row.weather_enabled, location: row.weather_location || '', units: row.weather_units, provider: row.weather_provider || 'openweathermap', days: row.weather_days || 5,
+      enabled: !!row.weather_enabled, location: row.weather_location || '', units: row.weather_units, provider: row.weather_provider || 'openweathermap', days: row.weather_days || 5, refreshMinutes: weatherRefreshMinutes(row.weather_refresh_minutes),
       showPrecip: !!row.weather_show_precip, showWind: !!row.weather_show_wind, showHumidity: !!row.weather_show_humidity, showCurrent: !!row.weather_show_current, showFeels: !!row.weather_show_feels,
       keys, hasKey: Object.fromEntries(weatherProviderIds().map((provider) => [provider, !!keys[provider]])),
     };
   }
   app.get('/api/household/weather', requireAdult, (req, res) => {
-    const row = db.prepare('SELECT weather_enabled,weather_location,weather_units,weather_provider,weather_days,weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?').get(req.auth.household_id);
+    const row = db.prepare('SELECT weather_enabled,weather_location,weather_units,weather_provider,weather_days,weather_refresh_minutes,weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?').get(req.auth.household_id);
     res.json(weatherSettings(row, weatherKeysFor(req.auth.household_id)));
   });
   app.put('/api/household/weather', requireAdult, (req, res) => {
     const id = req.auth.household_id;
-    const current = db.prepare('SELECT weather_enabled,weather_location,weather_units,weather_api_key,weather_provider,weather_days,weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?').get(id);
+    const current = db.prepare('SELECT weather_enabled,weather_location,weather_units,weather_api_key,weather_provider,weather_days,weather_refresh_minutes,weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?').get(id);
     const enabled = req.body.enabled === undefined ? current.weather_enabled : req.body.enabled ? 1 : 0;
     const location = req.body.location === undefined ? current.weather_location : text(req.body.location, 80);
     const units = req.body.units === undefined ? current.weather_units : req.body.units === 'c' ? 'c' : req.body.units === 'f' ? 'f' : null;
     const provider = req.body.provider === undefined ? (current.weather_provider || 'openweathermap') : text(req.body.provider, 20);
     const days = req.body.days === undefined ? current.weather_days || 5 : Number(req.body.days);
+    const refreshMinutes = req.body.refreshMinutes === undefined ? weatherRefreshMinutes(current.weather_refresh_minutes) : weatherRefreshMinutes(req.body.refreshMinutes, null);
     const flag = (name, column) => req.body[name] === undefined ? current[column] : req.body[name] ? 1 : 0;
     if (!weatherProviderIds().includes(provider)) return res.status(400).json({ error: 'Choose OpenWeatherMap, Open-Meteo, WeatherAPI.com, or Pirate Weather.' });
     if (!Number.isInteger(days) || days < 1 || days > 7) return res.status(400).json({ error: 'Choose 1 to 7 forecast days.' });
+    if (refreshMinutes === null) return res.status(400).json({ error: 'Choose a forecast update of 15 minutes, 30 minutes, 1 hour, or 3 hours.' });
     if (enabled && !location) return res.status(400).json({ error: 'Enter a location to show the forecast.' });
     if (!units) return res.status(400).json({ error: 'Choose Fahrenheit or Celsius.' });
     const keys = weatherKeysFor(id);
@@ -340,9 +342,9 @@ export function createApp(db, dependencies = {}) {
     const activeKey = keys[provider] || null;
     const refreshForecast = location !== current.weather_location || units !== current.weather_units || provider !== (current.weather_provider || 'openweathermap') || activeKey !== (current.weather_provider === provider ? current.weather_api_key : weatherKeysFor(id)[provider]);
     db.transaction(() => {
-      db.prepare(`UPDATE households SET weather_enabled=?,weather_location=?,weather_units=?,weather_api_key=?,weather_provider=?,weather_days=?,
+      db.prepare(`UPDATE households SET weather_enabled=?,weather_location=?,weather_units=?,weather_api_key=?,weather_provider=?,weather_days=?,weather_refresh_minutes=?,
         weather_show_precip=?,weather_show_wind=?,weather_show_humidity=?,weather_show_current=?,weather_show_feels=? WHERE id=?`).run(
-        enabled, location, units, activeKey, provider, days, flag('showPrecip', 'weather_show_precip'), flag('showWind', 'weather_show_wind'), flag('showHumidity', 'weather_show_humidity'), flag('showCurrent', 'weather_show_current'), flag('showFeels', 'weather_show_feels'), id);
+        enabled, location, units, activeKey, provider, days, refreshMinutes, flag('showPrecip', 'weather_show_precip'), flag('showWind', 'weather_show_wind'), flag('showHumidity', 'weather_show_humidity'), flag('showCurrent', 'weather_show_current'), flag('showFeels', 'weather_show_feels'), id);
       const saveKey = db.prepare(`INSERT INTO weather_provider_keys(household_id,provider,api_key) VALUES (?,?,?)
         ON CONFLICT(household_id,provider) DO UPDATE SET api_key=excluded.api_key`);
       const deleteKey = db.prepare('DELETE FROM weather_provider_keys WHERE household_id=? AND provider=?');
@@ -350,7 +352,7 @@ export function createApp(db, dependencies = {}) {
       if (refreshForecast) db.prepare('DELETE FROM weather_cache WHERE household_id=?').run(id);
     })();
     emit(id, 'dashboard');
-    const saved = db.prepare('SELECT weather_enabled,weather_location,weather_units,weather_provider,weather_days,weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?').get(id);
+    const saved = db.prepare('SELECT weather_enabled,weather_location,weather_units,weather_provider,weather_days,weather_refresh_minutes,weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?').get(id);
     const response = weatherSettings(saved, weatherKeysFor(id));
     delete response.keys;
     res.json(response);
