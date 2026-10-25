@@ -5,7 +5,7 @@
 Keep one settings tab for each independently configured household concern:
 
 - **Display**: header title, color palette, and scheduled dark mode.
-- **Screens**: screen pairing approval, paired display resolutions, last-seen status, and calendar previews.
+- **Screens**: screen pairing and reconnect approval, paired display resolutions, last-seen status, and calendar previews.
 - **Calendars**: week start and read-only iCal feeds.
 - **Routines**: household start times for Morning, Afternoon, and Bedtime.
 - **Weather**: forecast visibility, location, units, day count, refresh interval, display choices, and one saved key per provider.
@@ -32,6 +32,13 @@ Settings forms keep drafts through unrelated refreshes and use explicit saving.
 Weather and calendar connection status is adult-only. Saved weather keys are
 write-only through the settings API. Connection attempts are held in memory and
 reset on restart; weather's last successful fetch time comes from its cache.
+
+Address changes use the existing kiosk installer to update the saved URL.
+An adult reconnects an existing screen using the code shown at the new address.
+Reconnect approval keeps the old credential valid until the new browser claims its
+session, then rotates the credential on the same screen record. Names and
+reported screen details remain attached to that record. Expired or revoked
+pairing attempts cannot create a replacement screen silently.
 
 ## Delivery Order
 

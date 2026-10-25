@@ -131,11 +131,15 @@ export function createApp(db, dependencies = {}) {
     res.status(201).json(pairing);
   });
   app.post('/api/display-pairings/status', csrf, (req, res) => {
-    const claim = claimDisplayPairing(db, req.body?.secret);
+    const claim = db.transaction(() => {
+      const result = claimDisplayPairing(db, req.body?.secret);
+      if (result.status === 'paired' && !result.already) saveDeviceScreen(db, result.token, screenMetrics(req.body));
+      return result;
+    })();
     if (claim.status === 'paired' && !claim.already) {
-      const token = createSession(db, { householdId: claim.householdId, kind: 'device', deviceName: claim.deviceName });
-      saveDeviceScreen(db, token, screenMetrics(req.body));
+      const token = claim.token;
       setSessionCookie(res, token, 'device');
+      if (claim.reconnectedSessionId) closeScreenStreams(claim.householdId, claim.reconnectedSessionId);
     }
     res.json({ status: claim.status });
   });
@@ -186,6 +190,7 @@ export function createApp(db, dependencies = {}) {
     clearUserSessionCookie(res); res.json({ ok: true });
   });
   app.get('/api/events/stream', (req, res) => {
+    res.locals.sessionId = req.auth.id;
     res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.flushHeaders(); res.write('event: ready\ndata: {}\n\n');
     const set = clients.get(req.auth.household_id) || new Set(); set.add(res); clients.set(req.auth.household_id, set);
@@ -259,7 +264,9 @@ export function createApp(db, dependencies = {}) {
   });
   app.post('/api/screens/pair', requireAdult, (req, res) => {
     const name = text(req.body.name, 60) || 'Wall display';
-    if (!approveDisplayPairing(db, req.auth.household_id, req.body.code, name)) return res.status(400).json({ error: 'The pairing code is invalid or expired.' });
+    const reconnectId = req.body.reconnectId === undefined ? null : req.body.reconnectId;
+    if (reconnectId !== null && (!Number.isSafeInteger(reconnectId) || reconnectId <= 0)) return res.status(400).json({ error: 'Choose an existing screen to reconnect.' });
+    if (!approveDisplayPairing(db, req.auth.household_id, req.body.code, name, reconnectId)) return res.status(400).json({ error: 'The code is invalid, expired, or already assigned, or the screen is unavailable. Refresh Screens and try again.' });
     res.json({ ok: true });
   });
   app.put('/api/household/week-start', requireAdult, (req, res) => {
@@ -388,7 +395,10 @@ export function createApp(db, dependencies = {}) {
     res.json({ ok: true });
   });
   app.get('/api/devices', requireAdult, (req, res) => res.json(db.prepare("SELECT id,device_name,screen_width,screen_height,viewport_width,viewport_height,pixel_ratio,last_seen_at,created_at,expires_at FROM sessions WHERE household_id=? AND kind='device' ORDER BY created_at DESC").all(req.auth.household_id)));
-  app.delete('/api/devices/:id', requireAdult, (req, res) => { db.prepare("DELETE FROM sessions WHERE id=? AND household_id=? AND kind='device'").run(req.params.id, req.auth.household_id); res.status(204).end(); });
+  function closeScreenStreams(householdId, sessionId) {
+    for (const response of clients.get(householdId) || []) if (response.locals.sessionId === sessionId) response.end();
+  }
+  app.delete('/api/devices/:id', requireAdult, (req, res) => { const result = db.prepare("DELETE FROM sessions WHERE id=? AND household_id=? AND kind='device'").run(req.params.id, req.auth.household_id); if (result.changes) closeScreenStreams(req.auth.household_id, Number(req.params.id)); res.status(204).end(); });
 
   function childIdsFor(householdId, ids) {
     const requested = [...new Set((Array.isArray(ids) ? ids : [ids]).map(Number).filter(Boolean))];

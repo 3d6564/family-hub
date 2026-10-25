@@ -23,7 +23,7 @@ test('release metadata stays adult-only and marks local builds as development', 
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   t.after(() => keys.forEach((key) => previous[key] === undefined ? delete process.env[key] : process.env[key] = previous[key]));
   for (const key of keys) delete process.env[key];
-  assert.deepEqual(releaseInfo(), { version: '0.3.4', revision: null, created: null, channel: 'development' });
+  assert.deepEqual(releaseInfo(), { version: '0.3.5', revision: null, created: null, channel: 'development' });
   const db = database(), home = household(db, 'Home'), password = await hashPassword('a secure password');
   const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'release@example.test', 'Adult', password).lastInsertRowid);
   const adultToken = createSession(db, { householdId: home, userId: adult });
@@ -708,6 +708,90 @@ test('a screen code does not grant a session until an adult approves it', async 
   assert.equal(approveDisplayPairing(db, other, pairing.code, 'Late'), false);
   const local = createDisplayPairing(db);
   assert.equal(db.prepare('SELECT device_secret_hash FROM display_pairings WHERE user_code_hash=?').get(digest(local.code)).device_secret_hash, digest(local.secret));
+});
+
+test('an adult can reconnect the same screen without revoking its old access before claim', { timeout: 15000 }, async (t) => {
+  const previous = process.env.SITE_URL; process.env.SITE_URL = 'https://hub.example.test';
+  t.after(() => previous === undefined ? delete process.env.SITE_URL : process.env.SITE_URL = previous);
+  const db = database(), home = household(db, 'Home'), other = household(db, 'Other'), password = await hashPassword('a secure password');
+  const addUser = (house, email, role) => Number(db.prepare('INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?,?)').run(house, email, 'Sample user', password, role).lastInsertRowid);
+  const adult = addUser(home, 'reconnect@example.test', 'adult'), child = addUser(home, 'child-reconnect@example.test', 'child'), outsider = addUser(other, 'outside-reconnect@example.test', 'adult');
+  const oldToken = createSession(db, { householdId: home, kind: 'device', deviceName: 'Kitchen display' });
+  const old = db.prepare('SELECT * FROM sessions WHERE token_hash=?').get(digest(oldToken));
+  db.prepare('UPDATE sessions SET screen_width=1280,screen_height=720,viewport_width=1280,viewport_height=720,pixel_ratio=1 WHERE id=?').run(old.id);
+  const adultToken = createSession(db, { householdId: home, userId: adult });
+  const childToken = createSession(db, { householdId: home, userId: child });
+  const outsiderToken = createSession(db, { householdId: other, userId: outsider });
+  const server = createApp(db).listen(0);
+  t.after(() => { server.close(); db.close(); });
+  await new Promise(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const headers = { origin: 'https://hub.example.test', 'x-csrf-token': '1', 'content-type': 'application/json' };
+  const oldHeaders = { cookie: `family_device_session=${oldToken}` };
+  const pairing = createDisplayPairing(db);
+  const approve = (token, body, overrides = {}) => fetch(`${base}/api/screens/pair`, { method: 'POST', headers: { ...headers, cookie: `family_user_session=${token}`, ...overrides }, body: JSON.stringify(body) });
+  const body = { code: pairing.code, reconnectId: old.id, name: 'Must not rename' };
+  assert.equal((await approve(childToken, body)).status, 403);
+  assert.equal((await approve(outsiderToken, body)).status, 400);
+  assert.equal((await approve(adultToken, body, { origin: 'https://wrong.example.test' })).status, 403);
+  assert.equal((await approve(adultToken, body, { 'x-csrf-token': '' })).status, 403);
+  for (const reconnectId of [0, -1, 1.5, String(old.id), {}, []]) assert.equal((await approve(adultToken, { ...body, reconnectId })).status, 400);
+  const deviceApproval = await fetch(`${base}/api/screens/pair`, { method: 'POST', headers: { ...headers, ...oldHeaders }, body: JSON.stringify(body) });
+  assert.equal(deviceApproval.status, 403);
+  const userSessionId = db.prepare('SELECT id FROM sessions WHERE token_hash=?').get(digest(adultToken)).id;
+  assert.equal((await approve(adultToken, { ...body, reconnectId: userSessionId })).status, 400);
+  assert.equal((await approve(adultToken, body)).status, 200);
+  assert.equal((await approve(adultToken, body)).status, 200);
+  assert.equal((await approve(adultToken, { code: pairing.code })).status, 400);
+  assert.equal((await fetch(`${base}/api/dashboard`, { headers: oldHeaders })).status, 200);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM sessions WHERE household_id=? AND kind='device'").get(home).n, 1);
+
+  const abort = new AbortController(); t.after(() => abort.abort());
+  const stream = await fetch(`${base}/api/events/stream`, { headers: oldHeaders, signal: AbortSignal.any([abort.signal, AbortSignal.timeout(10000)]) });
+  const reader = stream.body.getReader(); await reader.read();
+  const claimed = await fetch(`${base}/api/display-pairings/status`, { method: 'POST', headers, body: JSON.stringify({ secret: pairing.secret, screenWidth: 1920, screenHeight: 1080, viewportWidth: 1920, viewportHeight: 1080, pixelRatio: 1 }) });
+  assert.deepEqual(await claimed.json(), { status: 'paired' });
+  const cookie = claimed.headers.get('set-cookie');
+  assert.match(cookie, /family_device_session=/); assert.match(cookie, /; Secure/); assert.doesNotMatch(cookie, /family_user_session=/);
+  assert.equal((await reader.read()).done, true);
+  const newCookie = cookie.split(';')[0];
+  assert.equal((await fetch(`${base}/api/dashboard`, { headers: oldHeaders })).status, 401);
+  assert.equal((await fetch(`${base}/api/dashboard`, { headers: { cookie: newCookie } })).status, 200);
+  const listed = await (await fetch(`${base}/api/devices`, { headers: { cookie: `family_user_session=${adultToken}` } })).json();
+  assert.equal(listed.length, 1); assert.equal(listed[0].id, old.id); assert.equal(listed[0].device_name, 'Kitchen display'); assert.equal(listed[0].created_at, old.created_at);
+  assert.equal(listed[0].viewport_width, 1920); assert.ok(listed[0].last_seen_at);
+  assert.equal(JSON.stringify(listed).includes(pairing.secret), false);
+  const again = await fetch(`${base}/api/display-pairings/status`, { method: 'POST', headers, body: JSON.stringify({ secret: pairing.secret }) });
+  assert.deepEqual(await again.json(), { status: 'paired' }); assert.equal(again.headers.get('set-cookie'), null);
+});
+
+test('expired, revoked, or superseded reconnect attempts cannot create duplicate screens', () => {
+  const db = database(), home = household(db, 'Home');
+  try {
+    const token = createSession(db, { householdId: home, kind: 'device', deviceName: 'Hall display' });
+    const screen = db.prepare('SELECT * FROM sessions WHERE token_hash=?').get(digest(token));
+    const expired = createDisplayPairing(db);
+    assert.equal(approveDisplayPairing(db, home, expired.code, 'Ignored', screen.id), true);
+    db.prepare("UPDATE display_pairings SET expires_at='2000-01-01T00:00:00.000Z' WHERE user_code_hash=?").run(digest(expired.code));
+    assert.deepEqual(claimDisplayPairing(db, expired.secret), { status: 'expired' });
+    assert.equal(db.prepare('SELECT token_hash FROM sessions WHERE id=?').get(screen.id).token_hash, digest(token));
+    const first = createDisplayPairing(db), second = createDisplayPairing(db);
+    assert.equal(approveDisplayPairing(db, home, first.code, '', screen.id), true);
+    assert.equal(approveDisplayPairing(db, home, second.code, '', screen.id), true);
+    assert.deepEqual(claimDisplayPairing(db, 'not-the-device-secret-at-all'), { status: 'expired' });
+    // Expired device access can be renewed without losing its screen identity.
+    db.prepare("UPDATE sessions SET expires_at='2000-01-01T00:00:00.000Z' WHERE id=?").run(screen.id);
+    const connected = claimDisplayPairing(db, first.secret);
+    assert.equal(connected.status, 'paired'); assert.ok(connected.token);
+    assert.equal(db.prepare('SELECT expires_at FROM sessions WHERE id=?').get(screen.id).expires_at > new Date().toISOString(), true);
+    assert.deepEqual(claimDisplayPairing(db, second.secret), { status: 'expired' });
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM sessions WHERE kind='device'").get().n, 1);
+    const revoked = createDisplayPairing(db);
+    assert.equal(approveDisplayPairing(db, home, revoked.code, '', screen.id), true);
+    db.prepare('DELETE FROM sessions WHERE id=?').run(screen.id);
+    assert.deepEqual(claimDisplayPairing(db, revoked.secret), { status: 'expired' });
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM sessions WHERE kind='device'").get().n, 0);
+  } finally { db.close(); }
 });
 
 test('temporary password exception and pairing codes stay limited to explicit helpers', async () => {

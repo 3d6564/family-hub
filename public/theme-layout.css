@@ -21,6 +21,8 @@ header time{font-size:1.35rem;font-weight:700;letter-spacing:0;white-space:nowra
 .settings-panel h3:not(:first-child){margin-top:24px}
 .settings-form{display:grid;gap:12px;margin:0 0 18px}
 .settings-group{padding:14px 0;border-top:1px solid var(--line)}
+.screen-card-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.screen-card-actions button{flex:1;white-space:normal}
 .settings-group:first-child{padding-top:0;border-top:0}
 .settings-group h3{margin-top:0!important}
 .danger-zone{margin-top:12px;padding:14px;border:1px solid var(--line);border-left:4px solid #b34538;border-radius:8px}

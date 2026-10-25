@@ -6,7 +6,7 @@ let me, dashboard, members=[], routineCatalog=[], choreCatalog=[], feedCatalog=[
 let weatherHasKeys = {};
 const settingsForms = createSettingsForms({
   extraState: form => form.id === 'weather-form' ? JSON.stringify(weatherKeys) : '',
-  onDiscard: form => { if (form.id === 'weather-form') { weatherKeys = {}; form.dataset.activeProvider = ''; showWeatherProvider(form.elements.weatherProvider.value); } },
+  onDiscard: form => { if (form.id === 'weather-form') { weatherKeys = {}; form.dataset.activeProvider = ''; showWeatherProvider(form.elements.weatherProvider.value); } if(form.id==='screen-pair-form')syncScreenPairMode(); },
 });
 const settingsRoot = () => $('.settings');
 const editableSettings = form => !settingsForms.dirty(form) && !settingsForms.busy(form);
@@ -199,17 +199,39 @@ async function setupScreensSettings() {
   if (!panel) {
     const button = document.createElement('button'); button.id = 'settings-tab-screens'; button.type = 'button'; button.dataset.settingsTab = 'screens'; button.setAttribute('role', 'tab'); button.setAttribute('aria-controls', 'settings-panel-screens'); button.textContent = 'Screens'; button.onclick = () => activateSettingsTab('screens'); tabs.querySelector('[data-settings-tab="display"]').after(button);
     panel = document.createElement('section'); panel.id = 'settings-panel-screens'; panel.className = 'settings-panel screens-panel'; panel.dataset.settingsCategory = 'screens'; panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', 'settings-tab-screens'); grid.append(panel);
-    panel.innerHTML = '<h3>Add a screen</h3><p class="muted">Enter the code shown on the display. Approval gives it a lower-permission display session.</p><form id="screen-pair-form" class="settings-form"><label>Pairing code<input name="code" autocomplete="one-time-code" maxlength="12" required></label><label>Display name<input name="name" maxlength="60" value="Wall display" required></label><button>Add screen</button></form><h3>Registered screens</h3><p class="muted">Layout previews use the reported viewport. They are not live screenshots. Last seen is the last report, not a connection guarantee.</p><div class="screen-list"></div>';
-    const form = $('#screen-pair-form'); form.onsubmit = async event => { event.preventDefault(); if (await settingsForms.run(form, () => api('/api/screens/pair', { method: 'POST', body: JSON.stringify(formJson(form)) }), { reset: true })) { toast('Screen added. It will sign in shortly.'); await setupScreensSettings(); } };
+    panel.innerHTML = '<h3>Add or reconnect a screen</h3><p class="muted">After changing the Hub address or resetting a browser, reconnect its existing screen instead of adding a duplicate.</p><form id="screen-pair-form" class="settings-form"><label>Action<select name="reconnectId"><option value="">Add a new screen</option></select></label><p id="screen-pair-help" class="muted">Open Family Hub on the display, then enter its code below.</p><label>Code shown on the display<input name="code" autocomplete="one-time-code" maxlength="12" required></label><label id="screen-name-field">Display name<input name="name" maxlength="60" value="Wall display" required></label><button>Add screen</button></form><p id="screen-pair-result" role="status"></p><h3>Registered screens</h3><p class="muted">Layout previews use the reported viewport. They are not live screenshots. Last seen is the last report, not a connection guarantee.</p><div class="screen-list"></div>';
+    const form = $('#screen-pair-form');
+    form.elements.reconnectId.onchange = syncScreenPairMode;
+    form.onsubmit = async event => {
+      event.preventDefault(); const reconnect = !!form.elements.reconnectId.value;
+      const saved = await settingsForms.run(form, () => { const values = formJson(form); if(values.reconnectId)values.reconnectId=Number(values.reconnectId);else delete values.reconnectId;return api('/api/screens/pair', { method: 'POST', body: JSON.stringify(values) }); }, { reset: true });
+      if(saved){syncScreenPairMode();settingsForms.mark(form,'Approved.');$('#screen-pair-result').textContent=reconnect?'Reconnect approved. Keep the new display page open. Its name and screen record stay the same. Old access is replaced when the new display collects its connection.':'Screen approved. Keep its page open; it will sign in shortly.';await setupScreensSettings()}
+    };
     settingsForms.watch(panel);
   }
   const list = $('.screen-list', panel); settingsLoadNotice('screens', list, 'Loading…');
   try {
     const devices = await api('/api/devices'), refreshKey = Date.now();
-    list.innerHTML = devices.map(device => `<article class="screen-card"><div class="screen-card-heading"><h4>${escape(device.device_name)}</h4><button type="button" data-refresh-screen aria-label="Refresh ${escapeAttribute(device.device_name)} layout preview">↻</button></div>${screenPreview(device, refreshKey)}<button type="button" data-device="${device.id}" data-name="${escapeAttribute(device.device_name)}">Revoke screen access</button></article>`).join('') || empty('No paired screens yet.');
+    const form=$('#screen-pair-form');
+    if(editableSettings(form)){form.elements.reconnectId.innerHTML='<option value="">Add a new screen</option>'+devices.map(device=>`<option value="${device.id}">Reconnect ${escape(device.device_name)}</option>`).join('');syncScreenPairMode();settingsForms.mark(form)}
+    list.innerHTML = devices.map(device => `<article class="screen-card"><div class="screen-card-heading"><h4>${escape(device.device_name)}</h4><button type="button" data-refresh-screen aria-label="Refresh ${escapeAttribute(device.device_name)} layout preview">↻</button></div>${screenPreview(device, refreshKey)}<div class="screen-card-actions"><button type="button" data-reconnect-screen="${device.id}" aria-label="Reconnect ${escapeAttribute(device.device_name)}">Reconnect</button><button type="button" data-device="${device.id}" data-name="${escapeAttribute(device.device_name)}">Revoke screen access</button></div></article>`).join('') || empty('No paired screens yet.');
     settingsLoadNotice('screens', list); requestAnimationFrame(sizeScreenPreviews);
   } catch { settingsLoadNotice('screens', list, 'Screens could not load. Check the connection and retry.'); }
 }
+function syncScreenPairMode(){
+  const form=$('#screen-pair-form');if(!form)return;
+  const reconnect=!!form.elements.reconnectId.value;
+  $('#screen-name-field').hidden=reconnect;form.elements.name.disabled=reconnect;
+  $('button',form).textContent=reconnect?'Reconnect screen':'Add screen';
+  $('#screen-pair-help').textContent=reconnect?'Open the new Hub address on that display and enter its code. Its name stays the same. The old connection is not revoked until the new display collects its connection.':'Open Family Hub on the display, then enter its code below.';
+}
+document.addEventListener('click',event=>{
+  const button=event.target.closest('[data-reconnect-screen]');if(!button)return;
+  const form=$('#screen-pair-form');
+  if(form.elements.reconnectId.value!==button.dataset.reconnectScreen&&!settingsForms.guard(form))return;
+  form.elements.reconnectId.value=button.dataset.reconnectScreen;syncScreenPairMode();settingsForms.update(form);
+  form.elements.code.focus();form.scrollIntoView({block:'center'});
+});
 function setupTokenBoardSetting(){if(me.user?.role!=='adult')return;let form=$('#token-board-form');if(!form){form=document.createElement('form');form.id='token-board-form';form.className='settings-form';form.innerHTML='<label class="check-label"><input name="tokenBoardEnabled" type="checkbox"> Show token balances on the calendar</label><button>Save token display</button>';$('#theme-form').after(form);form.onsubmit=e=>{e.preventDefault();settingsForms.run(form,async()=>{const result=await api('/api/household/token-board',{method:'PUT',body:JSON.stringify({enabled:form.elements.tokenBoardEnabled.checked})});me.household.tokenBoardEnabled=result.tokenBoardEnabled;await renderTokenBoard()})}}if(editableSettings(form)){form.elements.tokenBoardEnabled.checked=!!me.household.tokenBoardEnabled;settingsForms.mark(form)}}
 function setupDisplayTitleSetting(){if(me.user?.role!=='adult')return;let form=$('#display-title-form');if(!form){form=document.createElement('form');form.id='display-title-form';form.className='settings-form display-title-setting adult-only';form.innerHTML='<label>Header title<input name="displayTitle" maxlength="60" placeholder="Leave blank to use household name"></label><button>Save title</button>';form.onsubmit=e=>{e.preventDefault();settingsForms.run(form,async()=>{const result=await api('/api/household/display-title',{method:'PUT',body:JSON.stringify({displayTitle:form.elements.displayTitle.value})});me.household.displayTitle=result.displayTitle;updateHouseholdTitle()})};$('#theme-form').before(form)}if(editableSettings(form)){form.elements.displayTitle.value=me.household.displayTitle||'';settingsForms.mark(form)}}
 function setupSettingsTabs() {

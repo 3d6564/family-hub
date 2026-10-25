@@ -20,6 +20,8 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   const publicRoot = new URL('../public/', import.meta.url);
   const household = { name: 'Sample home', timezone: 'UTC', weekStartsOn: 0, theme: 'green', dimEnabled: false, tokenBoardEnabled: false };
   let failWeatherLoad = true, failWeatherSave = false, weatherSaveCount = 0, tokenSaves = 0, screenDeletes = 0, restores = 0, holdSave;
+  let failScreenPair = false;
+  const pairingRequests = [];
   let weather = { enabled: false, location: 'Sample city', provider: 'open-meteo', units: 'f', days: 5, refreshMinutes: 30, hasKey: { openweathermap: true }, status: { state: 'disabled' } };
   let feeds = [{ id: 1, name: 'Sample calendar', color: '#4285f4', enabled: 1, status: { state: 'not_checked' } }];
   let sampleMembers = [{ id: 1, name: 'Sample adult', role: 'adult', has_email: 1 }, { id: 2, name: 'Sample child', role: 'child', has_email: 0 }];
@@ -50,6 +52,7 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     if (route === '/api/calendar/feeds') return json(feeds);
     if (route === '/api/calendar/feeds/1' && req.method === 'PATCH') { feeds = feeds.map(feed => ({ ...feed, ...body })); return json({ ok: true }); }
     if (route === '/api/devices') return json(screens);
+    if (route === '/api/screens/pair') { pairingRequests.push(body); return failScreenPair ? json({ error: 'Sample code expired. Enter the new code.' }, 400) : json({ ok: true }); }
     if (route === '/api/devices/3' && req.method === 'DELETE') { screenDeletes += 1; screens = []; res.writeHead(204); return res.end(); }
     if (route === '/api/household/token-board') { tokenSaves += 1; household.tokenBoardEnabled = body.enabled; return json({ tokenBoardEnabled: body.enabled }); }
     if (route === '/api/household/restore') { restores += 1; return json({ ok: true }); }
@@ -169,6 +172,33 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     assert.equal(await evaluate('document.querySelector("[name=displayTitle]").value'), 'Draft title');
     acceptDialog = true; await tab('screens'); acceptDialog = false;
     assert.equal(await evaluate('document.querySelector("[name=displayTitle]").value'), '');
+  });
+
+  await t.test('reconnecting an existing screen is easy to select and retains the draft on failure', async () => {
+    await tab('screens');
+    await until(() => evaluate('!!document.querySelector("[data-reconnect-screen]")'));
+    await click('[data-reconnect-screen]');
+    assert.equal(await evaluate('document.querySelector("[name=reconnectId]").value'), '3');
+    assert.equal(await evaluate('document.querySelector("#screen-name-field").hidden'), true);
+    assert.equal(await evaluate('document.activeElement.name'), 'code');
+    assert.match(await evaluate('document.querySelector("#screen-pair-help").textContent'), /old connection is not revoked/);
+    await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 1000, deviceScaleFactor: 1, mobile: false });
+    assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false);
+    await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await fill('#screen-pair-form [name=code]', 'ABCDEFGH');
+    failScreenPair = true;
+    await click('#screen-pair-form button');
+    await until(() => evaluate('document.querySelector("#screen-pair-form .form-status").textContent.includes("not saved")'));
+    assert.equal(await evaluate('document.querySelector("#screen-pair-form [name=code]").value'), 'ABCDEFGH');
+    await click('[data-refresh-screen]');
+    assert.equal(await evaluate('document.querySelector("[name=reconnectId]").value'), '3');
+    failScreenPair = false;
+    await click('#screen-pair-form button');
+    await until(() => evaluate('document.querySelector("#screen-pair-result").textContent.includes("Reconnect approved")'));
+    assert.deepEqual(pairingRequests.at(-1), { reconnectId: 3, code: 'ABCDEFGH' });
+    assert.equal(screens.length, 1); assert.equal(screens[0].device_name, 'Sample screen');
+    assert.equal(await evaluate('document.querySelector("[name=reconnectId]").value'), '');
+    assert.equal(await evaluate('document.querySelector("#screen-name-field").hidden'), false);
   });
 
   await t.test('screen revocation is located with screens and requires named confirmation', async () => {

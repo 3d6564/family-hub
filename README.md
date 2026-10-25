@@ -68,6 +68,29 @@ Use `--check` to preview changes and `--json` for structured automation results.
 Every run checks for supported prior installs. The installed display version is
 recorded separately from the application version.
 
+## Change the Hub address / fix a kiosk
+
+Use one permanent HTTPS address on your laptop, phone, and Pi. First confirm
+the Pi can resolve it and trusts its certificate, and save a current backup.
+Update Family Hub to a release with **Reconnect** under Screens before starting.
+
+1. Set `SITE_URL` to the new address and redeploy with the same data volume.
+2. On the Pi, as its desktop user (not with `sudo`), run your saved, verified
+   installer from **Add a display**. Replace the example address:
+
+   ```sh
+   bash install-display.sh https://hub.home.example/
+   ```
+
+3. Open the new address on your laptop and sign in. In **Settings > Screens**,
+   click **Reconnect** on the existing screen and enter the code shown on the Pi.
+
+The command updates kiosk startup and restarts its browser without deleting its
+profile. Reconnect keeps the screen's name and record; old access is replaced
+only when the new page collects its connection. Do not revoke the old screen or
+clear browser data first. If the code expires, use the new code shown on the Pi.
+Changing `SITE_URL` alone does not update the kiosk address.
+
 ## Develop locally
 
 Requirements: Node.js 22 and npm.
