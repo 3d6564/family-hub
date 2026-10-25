@@ -23,7 +23,7 @@ test('release metadata stays adult-only and marks local builds as development', 
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   t.after(() => keys.forEach((key) => previous[key] === undefined ? delete process.env[key] : process.env[key] = previous[key]));
   for (const key of keys) delete process.env[key];
-  assert.deepEqual(releaseInfo(), { version: '0.3.3', revision: null, created: null, channel: 'development' });
+  assert.deepEqual(releaseInfo(), { version: '0.3.4', revision: null, created: null, channel: 'development' });
   const db = database(), home = household(db, 'Home'), password = await hashPassword('a secure password');
   const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'release@example.test', 'Adult', password).lastInsertRowid);
   const adultToken = createSession(db, { householdId: home, userId: adult });
@@ -318,7 +318,10 @@ test('weather settings hide the API key and use OpenWeatherMap', async (t) => {
   assert.equal(JSON.stringify(saved).includes('secret-weather-key'), false);
   const listed = await (await fetch(`${base}/api/household/weather`, { headers })).json();
   assert.equal(listed.provider, 'openweathermap');
-  assert.equal(listed.keys.openweathermap, 'secret-weather-key');
+  assert.equal(listed.keys, undefined);
+  assert.equal(listed.hasKey.openweathermap, true);
+  assert.equal(JSON.stringify(listed).includes('secret-weather-key'), false);
+  assert.equal(listed.status.state, 'not_checked');
   assert.equal(listed.days, 5);
   assert.equal(listed.refreshMinutes, 30);
   assert.equal(saved.refreshMinutes, 30);
@@ -328,6 +331,9 @@ test('weather settings hide the API key and use OpenWeatherMap', async (t) => {
   assert.equal(JSON.stringify(shown).includes('secret-weather-key'), false);
   await fetch(`${base}/api/dashboard`, { headers });
   assert.equal(calls.length, 1);
+  const connected = await (await fetch(`${base}/api/household/weather`, { headers })).json();
+  assert.equal(connected.status.state, 'ok');
+  assert.ok(connected.status.lastSuccessAt);
   assert.equal((await fetch(`${base}/api/household/weather`, { method: 'PUT', headers, body: JSON.stringify({ enabled: true, location: 'Chicago', units: 'c', apiKey: '' }) })).status, 200);
   assert.equal(db.prepare('SELECT weather_api_key FROM households WHERE id=?').get(home).weather_api_key, 'secret-weather-key');
   const swapped = await (await fetch(`${base}/api/household/weather`, { method: 'PUT', headers, body: JSON.stringify({ enabled: true, location: 'Chicago', units: 'f', provider: 'pirateweather', days: 2, showPrecip: true, showCurrent: true, keys: { pirateweather: 'pirate-key' } }) })).json();
@@ -335,12 +341,14 @@ test('weather settings hide the API key and use OpenWeatherMap', async (t) => {
   assert.equal(swapped.days, 2);
   assert.equal(JSON.stringify(swapped).includes('pirate-key'), false);
   const both = await (await fetch(`${base}/api/household/weather`, { headers })).json();
-  assert.equal(both.keys.openweathermap, 'secret-weather-key');
-  assert.equal(both.keys.pirateweather, 'pirate-key');
+  assert.equal(both.hasKey.openweathermap, true);
+  assert.equal(both.hasKey.pirateweather, true);
+  assert.equal(both.keys, undefined);
   const edited = await (await fetch(`${base}/api/household/weather`, { method: 'PUT', headers, body: JSON.stringify({ provider: 'pirateweather', keys: { pirateweather: 'pirate-key-2' } }) })).json();
   assert.equal(edited.hasKey.pirateweather, true);
-  assert.equal((await (await fetch(`${base}/api/household/weather`, { headers })).json()).keys.pirateweather, 'pirate-key-2');
-  assert.equal((await (await fetch(`${base}/api/household/weather`, { headers })).json()).keys.openweathermap, 'secret-weather-key');
+  assert.equal(db.prepare('SELECT api_key FROM weather_provider_keys WHERE household_id=? AND provider=?').get(home, 'pirateweather').api_key, 'pirate-key-2');
+  assert.equal(db.prepare('SELECT api_key FROM weather_provider_keys WHERE household_id=? AND provider=?').get(home, 'openweathermap').api_key, 'secret-weather-key');
+  assert.equal((await fetch(`${base}/api/household/weather`, { method: 'PUT', headers, body: JSON.stringify({ keys: null }) })).status, 400);
   const short = await (await fetch(`${base}/api/dashboard`, { headers })).json();
   assert.equal(short.weather.days.length, 2);
   assert.equal(short.weather.show.precip, true);
@@ -352,6 +360,7 @@ test('weather settings hide the API key and use OpenWeatherMap', async (t) => {
   assert.equal(db.prepare('SELECT weather_refresh_minutes FROM households WHERE id=?').get(home).weather_refresh_minutes, 15);
   const deviceHeaders = { cookie: `family_device_session=${createSession(db, { householdId: home, kind: 'device', deviceName: 'Wall' })}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1' };
   assert.equal((await fetch(`${base}/api/household/weather`, { headers: deviceHeaders })).status, 403);
+  assert.equal((await fetch(`${base}/api/household/weather`, { method: 'PUT', headers: { ...deviceHeaders, 'content-type': 'application/json' }, body: JSON.stringify({ refreshMinutes: 180 }) })).status, 403);
   const wall = await (await fetch(`${base}/api/dashboard`, { headers: deviceHeaders })).json();
   assert.equal(JSON.stringify(wall).includes('secret-weather-key'), false);
   assert.equal(JSON.stringify(wall).includes('pirate-key'), false);
@@ -375,6 +384,41 @@ test('weather cache follows the household refresh interval', async () => {
   await currentForecast(db, row, fetchForecast, new Date(first.getTime() + 15 * 60 * 1000));
   assert.equal(calls, 2);
   db.close();
+});
+
+test('weather status reports failures, recovery, and household isolation without secrets', async (t) => {
+  const db = database(), home = household(db, 'Home'), other = household(db, 'Other');
+  const password = await hashPassword('a secure password');
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'status@example.test', 'Adult', password).lastInsertRowid);
+  const otherAdult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(other, 'other-status@example.test', 'Other adult', password).lastInsertRowid);
+  db.prepare("UPDATE households SET weather_enabled=1,weather_location='Sample city',weather_provider='open-meteo' WHERE id=?").run(home);
+  let fail = false;
+  const server = createApp(db, { fetchForecast: async () => {
+    if (fail) throw new Error('secret-provider-url');
+    return { place: 'Sample city', units: 'f', days: [{ label: 'Sun', condition: 'clear', high: 70, low: 50 }] };
+  } }).listen(0);
+  t.after(() => { server.close(); db.close(); });
+  await new Promise(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const headers = { cookie: `family_user_session=${createSession(db, { householdId: home, userId: adult })}` };
+  const settings = () => fetch(`${base}/api/household/weather`, { headers }).then(response => response.json());
+  await fetch(`${base}/api/dashboard`, { headers });
+  const first = await settings();
+  assert.equal(first.status.state, 'ok');
+  db.prepare("UPDATE weather_cache SET fetched_at='2020-01-01T00:00:00.000Z' WHERE household_id=?").run(home);
+  assert.equal((await settings()).status.state, 'stale');
+  fail = true;
+  const stale = await (await fetch(`${base}/api/dashboard`, { headers })).json();
+  assert.equal(stale.weather.days[0].high, 70);
+  const failed = await settings();
+  assert.equal(failed.status.state, 'error');
+  assert.ok(failed.status.lastAttemptAt);
+  assert.equal(JSON.stringify(failed).includes('secret-provider-url'), false);
+  const isolated = await (await fetch(`${base}/api/household/weather`, { headers: { cookie: `family_user_session=${createSession(db, { householdId: other, userId: otherAdult })}` } })).json();
+  assert.deepEqual(isolated.status, { state: 'disabled', lastSuccessAt: null, lastAttemptAt: null });
+  fail = false;
+  await fetch(`${base}/api/dashboard`, { headers });
+  assert.equal((await settings()).status.state, 'ok');
 });
 
 test('adults can reorder every routine in their household', async (t) => {
@@ -443,7 +487,7 @@ test('one feed failure does not hide local reminders or other feed events', asyn
   db.prepare("INSERT INTO calendar_feeds(household_id,name,url,color) VALUES (?,?,?,?)").run(home, 'Also working', 'https://also.example/feed.ics', '#333333');
   db.prepare('INSERT INTO local_reminders(household_id,title,starts_at,created_by) VALUES (?,?,?,?)').run(home, 'Local', '2026-09-10T12:00:00.000Z', adult);
   const feedFetcher = async (feed) => {
-    if (feed.name === 'Broken') throw new Error('invalid calendar data');
+    if (feed.name === 'Broken') throw new Error('invalid calendar data at https://secret.example/private-feed');
     const start = feed.name === 'Also working' ? '2026-09-11T18:00:00.000Z' : '2026-09-11T09:00:00.000Z';
     return [{ id: 'feed:event', title: feed.name, start: { dateTime: start }, end: null, color: feed.color, calendar: feed.name, source: 'ical' }];
   };
@@ -454,7 +498,14 @@ test('one feed failure does not hide local reminders or other feed events', asyn
   const response = await fetch(`${base}/api/calendar/events?from=2026-09-01T00:00:00.000Z&to=2026-10-01T00:00:00.000Z`, { headers });
   const body = await response.json();
   assert.deepEqual(body.events.map((event) => event.title), ['Local', 'Also working', 'Working']);
-  assert.deepEqual(body.errors, [{ feedId: 1, calendar: 'Broken', message: 'Could not load Broken: invalid calendar data' }]);
+  assert.deepEqual(body.errors, [{ feedId: 1, calendar: 'Broken', message: 'Could not load Broken. Check the calendar connection and try again.' }]);
+  const statuses = await (await fetch(`${base}/api/calendar/feeds`, { headers })).json();
+  assert.equal(statuses.find(feed => feed.name === 'Broken').status.state, 'error');
+  assert.equal(statuses.find(feed => feed.name === 'Broken').status.lastSuccessAt, null);
+  assert.equal(statuses.find(feed => feed.name === 'Working').status.state, 'ok');
+  assert.ok(statuses.find(feed => feed.name === 'Working').status.lastSuccessAt);
+  assert.equal(JSON.stringify(statuses).includes('secret.example'), false);
+  assert.equal(JSON.stringify(body).includes('secret.example'), false);
 });
 
 test('the kiosk origin keeps secure cookies and rejects a different HTTP origin', async (t) => {

@@ -18,6 +18,29 @@ Backups are downloaded from **Settings**, then **Access**. A backup is the whole
 
 See the [published image guide](docs/published-image.md) and the [update and recovery guide](docs/update-and-recovery.md).
 
+## Settings
+
+Settings keep separate Display, Screens, Calendars, Routines, Weather, Household,
+Access, and Integrations sections. All section tabs remain visible on phones.
+Routines configure the household widget independently of calendars.
+
+- Preference forms use explicit Save buttons, including token visibility.
+  Unsaved edits stay in this browser tab. Leaving a section or the settings view
+  asks before discarding edits. Failed saves keep the draft for retry.
+- Household preferences apply to all displays. The header light/dark toggle is
+  local to the current browser. Screen pairing and revocation are under Screens.
+  A layout preview is not a live screenshot; Last seen is the last screen report.
+- Weather and calendar settings show connection status and last successful
+  refresh when known. Checks happen during normal dashboard/calendar requests.
+  Attempt history resets when the service restarts; the weather cache retains
+  its last successful fetch time. Provider failures do not expose raw errors.
+- Saved weather keys are not returned to the browser. Leave the replacement key
+  blank to keep the saved key. The Show replacement key checkbox reveals only
+  text you enter, not the saved key.
+- Access separates account controls, backup download, installed version, and
+  restoration. Restore replaces household data and restarts the service. Save a
+  current backup first. Updates remain a host-owner operation.
+
 ## Add a display
 
 The display computer only runs Chromium. It does not run the application.
@@ -56,6 +79,12 @@ npm start
 ```
 
 Open `http://localhost:3000`. Run `npm run check` and `npm test` before a change is merged.
+
+Optional settings browser checks use an already installed Chromium binary, with
+no added package. Set `FAMILY_HUB_TEST_BROWSER` to its executable path before
+running `npm test`. These checks use sample API responses and a temporary browser
+profile, never a live household. Without that variable, the browser test is
+reported as skipped.
 
 ## Limits
 

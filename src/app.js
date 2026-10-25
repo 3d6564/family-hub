@@ -54,6 +54,8 @@ function saveDeviceScreen(db, token, metrics) {
 
 /** Build the Express application around an opened database. */
 export function createApp(db, dependencies = {}) {
+  // Only safe connection outcomes are retained; provider errors can contain secrets.
+  const weatherAttempts = new Map(), calendarAttempts = new Map();
   const app = express();
   const deploymentVersion = crypto.randomUUID();
   app.disable('x-powered-by');
@@ -204,7 +206,7 @@ export function createApp(db, dependencies = {}) {
     const plans = db.prepare('SELECT * FROM family_targets WHERE household_id=? ORDER BY sort_order,id').all(h);
     const dim = db.prepare('SELECT dim_enabled enabled,dim_start start,dim_end end,timezone,theme,display_title displayTitle,token_board_enabled tokenBoardEnabled,routine_morning_start routineMorningStart,routine_afternoon_start routineAfternoonStart,routine_bedtime_start routineBedtimeStart FROM households WHERE id=?').get(h);
     dim.tokenBoardEnabled = !!dim.tokenBoardEnabled;
-    const weather = await currentForecast(db, household, dependencies.fetchForecast || fetchWeather);
+    const weather = await currentForecast(db, household, dependencies.fetchForecast || fetchWeather, new Date(), (status) => weatherAttempts.set(h, status));
     res.json({ today, routines, chores, plans, dim, weather });
   }));
 
@@ -303,12 +305,17 @@ export function createApp(db, dependencies = {}) {
     return {
       enabled: !!row.weather_enabled, location: row.weather_location || '', units: row.weather_units, provider: row.weather_provider || 'openweathermap', days: row.weather_days || 5, refreshMinutes: weatherRefreshMinutes(row.weather_refresh_minutes),
       showPrecip: !!row.weather_show_precip, showWind: !!row.weather_show_wind, showHumidity: !!row.weather_show_humidity, showCurrent: !!row.weather_show_current, showFeels: !!row.weather_show_feels,
-      keys, hasKey: Object.fromEntries(weatherProviderIds().map((provider) => [provider, !!keys[provider]])),
+      hasKey: Object.fromEntries(weatherProviderIds().map((provider) => [provider, !!keys[provider]])),
     };
   }
   app.get('/api/household/weather', requireAdult, (req, res) => {
     const row = db.prepare('SELECT weather_enabled,weather_location,weather_units,weather_provider,weather_days,weather_refresh_minutes,weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?').get(req.auth.household_id);
-    res.json(weatherSettings(row, weatherKeysFor(req.auth.household_id)));
+    const cached = db.prepare('SELECT fetched_at FROM weather_cache WHERE household_id=?').get(req.auth.household_id);
+    const attempt = weatherAttempts.get(req.auth.household_id);
+    const settings = weatherSettings(row, weatherKeysFor(req.auth.household_id));
+    const configured = !!row.weather_location && (settings.provider === 'open-meteo' || settings.hasKey[settings.provider]);
+    const state = !settings.enabled ? 'disabled' : !configured ? 'unconfigured' : attempt?.failed ? 'error' : !cached ? 'not_checked' : Date.now() - Date.parse(cached.fetched_at) >= settings.refreshMinutes * 60000 ? 'stale' : 'ok';
+    res.json({ ...settings, status: { state, lastSuccessAt: cached?.fetched_at || null, lastAttemptAt: attempt?.lastAttemptAt || null } });
   });
   app.put('/api/household/weather', requireAdult, (req, res) => {
     const id = req.auth.household_id;
@@ -326,7 +333,7 @@ export function createApp(db, dependencies = {}) {
     if (enabled && !location) return res.status(400).json({ error: 'Enter a location to show the forecast.' });
     if (!units) return res.status(400).json({ error: 'Choose Fahrenheit or Celsius.' });
     const keys = weatherKeysFor(id);
-    if (req.body.keys !== undefined && (typeof req.body.keys !== 'object' || Array.isArray(req.body.keys))) return res.status(400).json({ error: 'Save each provider key separately.' });
+    if (req.body.keys !== undefined && (!req.body.keys || typeof req.body.keys !== 'object' || Array.isArray(req.body.keys))) return res.status(400).json({ error: 'Save each provider key separately.' });
     for (const name of weatherProviderIds()) {
       if (!req.body.keys || req.body.keys[name] === undefined) continue;
       const key = weatherKeyValue(req.body.keys[name]);
@@ -349,12 +356,14 @@ export function createApp(db, dependencies = {}) {
         ON CONFLICT(household_id,provider) DO UPDATE SET api_key=excluded.api_key`);
       const deleteKey = db.prepare('DELETE FROM weather_provider_keys WHERE household_id=? AND provider=?');
       for (const name of weatherProviderIds()) if (keys[name]) saveKey.run(id, name, keys[name]); else deleteKey.run(id, name);
-      if (refreshForecast) db.prepare('DELETE FROM weather_cache WHERE household_id=?').run(id);
+      if (refreshForecast) {
+        db.prepare('DELETE FROM weather_cache WHERE household_id=?').run(id);
+        weatherAttempts.delete(id);
+      }
     })();
     emit(id, 'dashboard');
     const saved = db.prepare('SELECT weather_enabled,weather_location,weather_units,weather_provider,weather_days,weather_refresh_minutes,weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?').get(id);
     const response = weatherSettings(saved, weatherKeysFor(id));
-    delete response.keys;
     res.json(response);
   });
   app.put('/api/household/theme', requireAdult, (req, res) => {
@@ -538,7 +547,10 @@ export function createApp(db, dependencies = {}) {
   });
   app.delete('/api/reminders/:id', requireUser, (req, res) => { db.prepare('DELETE FROM local_reminders WHERE id=? AND household_id=?').run(req.params.id, req.auth.household_id); emit(req.auth.household_id, 'calendar'); res.status(204).end(); });
 
-  app.get('/api/calendar/feeds', requireAdult, (req, res) => res.json(db.prepare('SELECT id,name,color,enabled,sort_order,created_at,updated_at,1 configured FROM calendar_feeds WHERE household_id=? ORDER BY sort_order,id').all(req.auth.household_id)));
+  app.get('/api/calendar/feeds', requireAdult, (req, res) => {
+    const feeds = db.prepare('SELECT id,name,color,enabled,sort_order,created_at,updated_at,1 configured FROM calendar_feeds WHERE household_id=? ORDER BY sort_order,id').all(req.auth.household_id);
+    res.json(feeds.map((feed) => ({ ...feed, status: { ...(calendarAttempts.get(req.auth.household_id)?.get(feed.id) || { state: 'not_checked', lastSuccessAt: null, lastAttemptAt: null }), ...(!feed.enabled ? { state: 'disabled' } : {}) } })));
+  });
   app.post('/api/calendar/feeds', requireAdult, (req, res) => {
     const name = text(req.body.name, 80), color = text(req.body.color, 7), validation = validateFeedUrl(req.body.url);
     if (!name) return res.status(400).json({ error: 'Calendar name is required and must be 80 characters or fewer.' });
@@ -558,11 +570,13 @@ export function createApp(db, dependencies = {}) {
     if (!/^#[0-9a-f]{6}$/i.test(color || '')) return res.status(400).json({ error: 'Calendar color must be a six-digit hex color.' });
     if (!validation.valid) return res.status(400).json({ error: validation.error });
     db.prepare('UPDATE calendar_feeds SET name=?,url=?,color=?,enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(name, validation.url, color, req.body.enabled === undefined ? feed.enabled : +!!req.body.enabled, feed.id);
+    if (validation.url !== feed.url) calendarAttempts.get(req.auth.household_id)?.delete(feed.id);
     emit(req.auth.household_id, 'calendar'); res.json({ ok: true });
   });
   app.delete('/api/calendar/feeds/:id', requireAdult, (req, res) => {
     const result = db.prepare('DELETE FROM calendar_feeds WHERE id=? AND household_id=?').run(req.params.id, req.auth.household_id);
     if (!result.changes) return res.status(404).json({ error: 'Calendar feed not found.' });
+    calendarAttempts.get(req.auth.household_id)?.delete(Number(req.params.id));
     emit(req.auth.household_id, 'calendar'); res.status(204).end();
   });
   app.put('/api/calendar/feed-order', requireAdult, (req, res) => {
@@ -577,12 +591,17 @@ export function createApp(db, dependencies = {}) {
     const feeds = db.prepare('SELECT id,name,url,color,sort_order FROM calendar_feeds WHERE household_id=? AND enabled=1 ORDER BY sort_order,id').all(req.auth.household_id);
     const events = db.prepare('SELECT id,title,starts_at FROM local_reminders WHERE household_id=? AND starts_at>=? AND starts_at<? ORDER BY starts_at').all(req.auth.household_id, timeMin, timeMax).map((event) => ({ event: { id: `local:${event.id}`, title: event.title, start: { dateTime: event.starts_at }, end: null, color: null, calendar: 'Family Hub', source: 'local reminder' }, order: -1 }));
     const errors = [];
+    const statuses = calendarAttempts.get(req.auth.household_id) || new Map();
+    calendarAttempts.set(req.auth.household_id, statuses);
     for (const feed of feeds) {
+      const lastAttemptAt = new Date().toISOString();
       try {
         const feedEvents = await (dependencies.fetchFeedEvents || fetchFeedEvents)(feed, from, to);
         events.push(...feedEvents.map((event) => ({ event, order: feed.sort_order })));
+        statuses.set(feed.id, { state: 'ok', lastAttemptAt, lastSuccessAt: lastAttemptAt });
       } catch (error) {
-        errors.push({ feedId: feed.id, calendar: feed.name, message: `Could not load ${feed.name}: ${error.message}` });
+        statuses.set(feed.id, { state: 'error', lastAttemptAt, lastSuccessAt: statuses.get(feed.id)?.lastSuccessAt || null });
+        errors.push({ feedId: feed.id, calendar: feed.name, message: `Could not load ${feed.name}. Check the calendar connection and try again.` });
       }
     }
     events.sort((a, b) => a.order - b.order || (a.event.start.dateTime || a.event.start.date).localeCompare(b.event.start.dateTime || b.event.start.date));

@@ -370,8 +370,8 @@ function providerKey(db, household) {
   return { provider, apiKey: saved?.api_key || (provider === 'openweathermap' ? household.weather_api_key || '' : '') };
 }
 
-/** Load a cached forecast, or refresh it when a provider is connected. */
-export async function currentForecast(db, household, fetchForecast, now = new Date()) {
+/** Load a cached forecast; report safe outcomes only when a provider refresh is attempted. */
+export async function currentForecast(db, household, fetchForecast, now = new Date(), onRefresh = () => {}) {
   if (!household?.weather_enabled || !household.weather_location) return null;
   const cached = db.prepare('SELECT payload,fetched_at FROM weather_cache WHERE household_id=?').get(household.id);
   const readCached = () => {
@@ -394,6 +394,7 @@ export async function currentForecast(db, household, fetchForecast, now = new Da
   } catch {
     fetched = null;
   }
+  onRefresh({ lastAttemptAt: now.toISOString(), failed: !fetched });
   if (!fetched) return readCached();
   db.prepare(`INSERT INTO weather_cache(household_id,payload,fetched_at) VALUES (?,?,?)
     ON CONFLICT(household_id) DO UPDATE SET payload=excluded.payload, fetched_at=excluded.fetched_at`).run(household.id, JSON.stringify(fetched), now.toISOString());

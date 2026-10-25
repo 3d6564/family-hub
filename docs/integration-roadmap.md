@@ -20,9 +20,18 @@ displays request the dashboard about every 5 minutes. Faster intervals increase
 provider API use; one refresh can make several requests. Provider failures keep
 the last saved forecast visible.
 
-An integration has a dedicated card in the Integrations tab. The card shows its connection state, the source of truth, the selected data, and an enable switch. Do not show an enable switch for a planned integration. Enable it only after configuration is valid.
+An available integration has a dedicated card in the Integrations tab. The card shows its connection state, the source of truth, the selected data, and an enable switch. Enable it only after configuration is valid. Keep planned integrations in this document, not as cards in the working settings interface.
 
-The current settings navigation uses an inline tab list. Keep it while each section is a peer and the labels fit on one row. Move to a Material-style navigation rail on wider displays and a drawer on narrow displays when settings gain nested pages, many connection instances, or more than about eight top-level sections.
+The current settings navigation uses a wrapping tab list. Each active section
+uses the full content width. Calendar and Routines remain separate. Screen
+revocation is under Screens; Access groups account controls, backups, installed
+version, and restoration separately. Broader navigation and section organization
+changes are deferred for a later review.
+
+Settings forms keep drafts through unrelated refreshes and use explicit saving.
+Weather and calendar connection status is adult-only. Saved weather keys are
+write-only through the settings API. Connection attempts are held in memory and
+reset on restart; weather's last successful fetch time comes from its cache.
 
 ## Delivery Order
 
