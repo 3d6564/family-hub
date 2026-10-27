@@ -102,34 +102,54 @@ export function createDisplayPairing(db, minutes = 10) {
   return { code, secret, expiresAt };
 }
 
-/** Bind a screen code to the approving adult's household. The code alone does not create a session. */
-export function approveDisplayPairing(db, householdId, code, deviceName) {
+/** Approve a new screen or reconnect an existing household screen without revoking it yet. */
+export function approveDisplayPairing(db, householdId, code, deviceName, reconnectSessionId = null) {
   const normalized = normalizeDisplayCode(code);
   const name = typeof deviceName === 'string' && deviceName.trim() && deviceName.trim().length <= 60 ? deviceName.trim() : 'Wall display';
   if (!normalized) return false;
-  const row = db.prepare('SELECT * FROM display_pairings WHERE user_code_hash=?').get(digest(normalized));
-  const now = new Date().toISOString();
-  if (!row || row.claimed_at || row.expires_at <= now) return false;
-  if (row.approved_at && row.household_id !== householdId) return false;
-  const result = db.prepare(`UPDATE display_pairings
-    SET household_id=?, device_name=?, approved_at=COALESCE(approved_at, ?)
-    WHERE id=? AND claimed_at IS NULL AND (approved_at IS NULL OR household_id=?)`).run(householdId, name, now, row.id, householdId);
-  return result.changes === 1;
+  if (reconnectSessionId !== null && (!Number.isSafeInteger(reconnectSessionId) || reconnectSessionId <= 0)) return false;
+  return db.transaction(() => {
+    const row = db.prepare('SELECT * FROM display_pairings WHERE user_code_hash=?').get(digest(normalized));
+    const now = new Date().toISOString();
+    if (!row || row.claimed_at || row.expires_at <= now) return false;
+    const screen = reconnectSessionId === null ? null : db.prepare("SELECT id,device_name,token_hash FROM sessions WHERE id=? AND household_id=? AND kind='device'").get(reconnectSessionId, householdId);
+    if (reconnectSessionId !== null && !screen) return false;
+    // An approved code cannot be redirected to a different screen or household.
+    if (row.approved_at) return row.household_id === householdId && row.reconnect_session_id === reconnectSessionId && (!screen || row.reconnect_token_hash === screen.token_hash);
+    const result = db.prepare(`UPDATE display_pairings
+      SET household_id=?, device_name=?, approved_at=?, reconnect_session_id=?, reconnect_token_hash=?
+      WHERE id=? AND claimed_at IS NULL AND approved_at IS NULL`).run(householdId, screen?.device_name || name, now, reconnectSessionId, screen?.token_hash || null, row.id);
+    return result.changes === 1;
+  })();
 }
 
 /**
- * Give the session only to the screen that holds the secret.
- * A second claim does not issue another session.
+ * Issue a session only to the screen holding the secret, once per pairing.
+ * Reconnects rotate the existing screen's token atomically, preserving its record.
  */
 export function claimDisplayPairing(db, secret) {
   if (typeof secret !== 'string' || secret.length < 20 || secret.length > 80) return { status: 'expired' };
-  const row = db.prepare('SELECT * FROM display_pairings WHERE device_secret_hash=?').get(digest(secret));
-  const now = new Date().toISOString();
-  if (!row || row.expires_at <= now) return { status: 'expired' };
-  if (!row.approved_at || !row.household_id) return { status: 'pending' };
-  const claim = db.prepare('UPDATE display_pairings SET claimed_at=? WHERE id=? AND claimed_at IS NULL').run(now, row.id);
-  if (!claim.changes) return { status: 'paired', already: true };
-  return { status: 'paired', householdId: row.household_id, deviceName: row.device_name || 'Wall display' };
+  return db.transaction(() => {
+    const row = db.prepare('SELECT * FROM display_pairings WHERE device_secret_hash=?').get(digest(secret));
+    const now = new Date().toISOString();
+    if (!row || row.expires_at <= now) return { status: 'expired' };
+    if (row.claimed_at) return { status: 'paired', already: true };
+    if (!row.approved_at || !row.household_id) return { status: 'pending' };
+    const screen = row.reconnect_session_id === null ? null : db.prepare("SELECT id,device_name FROM sessions WHERE id=? AND household_id=? AND kind='device' AND token_hash=?").get(row.reconnect_session_id, row.household_id, row.reconnect_token_hash);
+    // A revoked screen or a newer successful reconnect invalidates this attempt.
+    if (row.reconnect_session_id !== null && !screen) return { status: 'expired' };
+    const claim = db.prepare('UPDATE display_pairings SET claimed_at=? WHERE id=? AND claimed_at IS NULL').run(now, row.id);
+    if (!claim.changes) return { status: 'paired', already: true };
+    let token;
+    if (screen) {
+      token = randomToken();
+      const expires = new Date(Date.now() + +(process.env.SESSION_DAYS || 30) * 86400000).toISOString();
+      db.prepare("UPDATE sessions SET token_hash=?,expires_at=? WHERE id=? AND household_id=? AND kind='device'").run(digest(token), expires, screen.id, row.household_id);
+    } else {
+      token = createSession(db, { householdId: row.household_id, kind: 'device', deviceName: row.device_name || 'Wall display' });
+    }
+    return { status: 'paired', householdId: row.household_id, deviceName: screen?.device_name || row.device_name || 'Wall display', token, reconnectedSessionId: screen?.id || null };
+  })();
 }
 
 export function requireAdult(req, res, next) {

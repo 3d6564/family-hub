@@ -68,6 +68,7 @@ run_installer 'https://other.example/'
 expect '--user restart family-hub-display.service' "$HOME/calls"
 expect 'Family Hub display changed: true' "$HOME/output"
 expect '^https://other.example/$' "$XDG_CONFIG_HOME/family-hub/url"
+expect 'https://other.example/' "$XDG_CONFIG_HOME/family-hub/display.sh"
 expect '^test pairing state$' "$XDG_CONFIG_HOME/family-hub-kiosk/pairing"
 
 rm "$HOME/active"

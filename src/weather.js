@@ -1,5 +1,5 @@
 const conditions = new Set(['clear', 'cloudy', 'rain', 'storm', 'snow', 'unknown']);
-const cacheHours = 3;
+const refreshChoices = new Set([15, 30, 60, 180]);
 const providers = new Set(['openweathermap', 'open-meteo', 'weatherapi', 'pirateweather']);
 const providerDayLimit = { openweathermap: 5, 'open-meteo': 7, weatherapi: 7, pirateweather: 7 };
 const usStates = {
@@ -16,6 +16,12 @@ const usStates = {
 /** Return the supported weather provider ids. */
 export function weatherProviderIds() {
   return [...providers];
+}
+
+/** Return a supported forecast refresh interval in minutes, or the fallback. */
+export function weatherRefreshMinutes(value, fallback = 30) {
+  const minutes = Number(value);
+  return Number.isInteger(minutes) && refreshChoices.has(minutes) ? minutes : fallback;
 }
 
 /** Map an OpenWeatherMap condition id to a Family Hub icon name. */
@@ -364,15 +370,15 @@ function providerKey(db, household) {
   return { provider, apiKey: saved?.api_key || (provider === 'openweathermap' ? household.weather_api_key || '' : '') };
 }
 
-/** Load a cached forecast, or refresh it when a provider is connected. */
-export async function currentForecast(db, household, fetchForecast, now = new Date()) {
+/** Load a cached forecast; report safe outcomes only when a provider refresh is attempted. */
+export async function currentForecast(db, household, fetchForecast, now = new Date(), onRefresh = () => {}) {
   if (!household?.weather_enabled || !household.weather_location) return null;
   const cached = db.prepare('SELECT payload,fetched_at FROM weather_cache WHERE household_id=?').get(household.id);
   const readCached = () => {
     if (!cached) return null;
     try { return presentForecast(JSON.parse(cached.payload), household); } catch { return null; }
   };
-  const freshEnough = cached && now - new Date(cached.fetched_at) < cacheHours * 60 * 60 * 1000;
+  const freshEnough = cached && now - new Date(cached.fetched_at) < weatherRefreshMinutes(household.weather_refresh_minutes) * 60 * 1000;
   if (freshEnough) return readCached();
   const { provider, apiKey } = providerKey(db, household);
   if (!provider || (provider !== 'open-meteo' && !apiKey) || typeof fetchForecast !== 'function') return readCached();
@@ -388,6 +394,7 @@ export async function currentForecast(db, household, fetchForecast, now = new Da
   } catch {
     fetched = null;
   }
+  onRefresh({ lastAttemptAt: now.toISOString(), failed: !fetched });
   if (!fetched) return readCached();
   db.prepare(`INSERT INTO weather_cache(household_id,payload,fetched_at) VALUES (?,?,?)
     ON CONFLICT(household_id) DO UPDATE SET payload=excluded.payload, fetched_at=excluded.fetched_at`).run(household.id, JSON.stringify(fetched), now.toISOString());

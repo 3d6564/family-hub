@@ -11,7 +11,7 @@ import { fetchFeedEvents, validateFeedUrl } from './ical.js';
 import { ensureTokenLedger, postChoreEarning, reverseChoreEarning, tokenLedger, tokenStatus, TokenError, withdrawTokens } from './tokens.js';
 import { releaseInfo } from './release.js';
 import { createUpdateChecker } from './updates.js';
-import { currentForecast, fetchWeather, weatherProviderIds } from './weather.js';
+import { currentForecast, fetchWeather, weatherProviderIds, weatherRefreshMinutes } from './weather.js';
 
 const publicDir = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'public');
 const clients = new Map();
@@ -54,6 +54,8 @@ function saveDeviceScreen(db, token, metrics) {
 
 /** Build the Express application around an opened database. */
 export function createApp(db, dependencies = {}) {
+  // Only safe connection outcomes are retained; provider errors can contain secrets.
+  const weatherAttempts = new Map(), calendarAttempts = new Map();
   const app = express();
   const deploymentVersion = crypto.randomUUID();
   app.disable('x-powered-by');
@@ -129,11 +131,15 @@ export function createApp(db, dependencies = {}) {
     res.status(201).json(pairing);
   });
   app.post('/api/display-pairings/status', csrf, (req, res) => {
-    const claim = claimDisplayPairing(db, req.body?.secret);
+    const claim = db.transaction(() => {
+      const result = claimDisplayPairing(db, req.body?.secret);
+      if (result.status === 'paired' && !result.already) saveDeviceScreen(db, result.token, screenMetrics(req.body));
+      return result;
+    })();
     if (claim.status === 'paired' && !claim.already) {
-      const token = createSession(db, { householdId: claim.householdId, kind: 'device', deviceName: claim.deviceName });
-      saveDeviceScreen(db, token, screenMetrics(req.body));
+      const token = claim.token;
       setSessionCookie(res, token, 'device');
+      if (claim.reconnectedSessionId) closeScreenStreams(claim.householdId, claim.reconnectedSessionId);
     }
     res.json({ status: claim.status });
   });
@@ -184,6 +190,7 @@ export function createApp(db, dependencies = {}) {
     clearUserSessionCookie(res); res.json({ ok: true });
   });
   app.get('/api/events/stream', (req, res) => {
+    res.locals.sessionId = req.auth.id;
     res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.flushHeaders(); res.write('event: ready\ndata: {}\n\n');
     const set = clients.get(req.auth.household_id) || new Set(); set.add(res); clients.set(req.auth.household_id, set);
@@ -192,7 +199,7 @@ export function createApp(db, dependencies = {}) {
 
   app.get('/api/dashboard', asyncRoute(async (req, res) => {
     const h = req.auth.household_id;
-    const household = db.prepare(`SELECT id,timezone,weather_enabled,weather_location,weather_units,weather_api_key,weather_provider,weather_days,
+    const household = db.prepare(`SELECT id,timezone,weather_enabled,weather_location,weather_units,weather_api_key,weather_provider,weather_days,weather_refresh_minutes,
       weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?`).get(h);
     const today = localDate(new Date(), household.timezone);
     const routines = db.prepare(`SELECT r.id,r.title,r.days,r.period,r.sort_order,a.child_id,u.name child_name,EXISTS(SELECT 1 FROM routine_completions c WHERE c.routine_id=r.id AND c.child_id=a.child_id AND c.completed_on=?) completed
@@ -204,7 +211,7 @@ export function createApp(db, dependencies = {}) {
     const plans = db.prepare('SELECT * FROM family_targets WHERE household_id=? ORDER BY sort_order,id').all(h);
     const dim = db.prepare('SELECT dim_enabled enabled,dim_start start,dim_end end,timezone,theme,display_title displayTitle,token_board_enabled tokenBoardEnabled,routine_morning_start routineMorningStart,routine_afternoon_start routineAfternoonStart,routine_bedtime_start routineBedtimeStart FROM households WHERE id=?').get(h);
     dim.tokenBoardEnabled = !!dim.tokenBoardEnabled;
-    const weather = await currentForecast(db, household, dependencies.fetchForecast || fetchWeather);
+    const weather = await currentForecast(db, household, dependencies.fetchForecast || fetchWeather, new Date(), (status) => weatherAttempts.set(h, status));
     res.json({ today, routines, chores, plans, dim, weather });
   }));
 
@@ -257,7 +264,9 @@ export function createApp(db, dependencies = {}) {
   });
   app.post('/api/screens/pair', requireAdult, (req, res) => {
     const name = text(req.body.name, 60) || 'Wall display';
-    if (!approveDisplayPairing(db, req.auth.household_id, req.body.code, name)) return res.status(400).json({ error: 'The pairing code is invalid or expired.' });
+    const reconnectId = req.body.reconnectId === undefined ? null : req.body.reconnectId;
+    if (reconnectId !== null && (!Number.isSafeInteger(reconnectId) || reconnectId <= 0)) return res.status(400).json({ error: 'Choose an existing screen to reconnect.' });
+    if (!approveDisplayPairing(db, req.auth.household_id, req.body.code, name, reconnectId)) return res.status(400).json({ error: 'The code is invalid, expired, or already assigned, or the screen is unavailable. Refresh Screens and try again.' });
     res.json({ ok: true });
   });
   app.put('/api/household/week-start', requireAdult, (req, res) => {
@@ -301,30 +310,37 @@ export function createApp(db, dependencies = {}) {
   }
   function weatherSettings(row, keys) {
     return {
-      enabled: !!row.weather_enabled, location: row.weather_location || '', units: row.weather_units, provider: row.weather_provider || 'openweathermap', days: row.weather_days || 5,
+      enabled: !!row.weather_enabled, location: row.weather_location || '', units: row.weather_units, provider: row.weather_provider || 'openweathermap', days: row.weather_days || 5, refreshMinutes: weatherRefreshMinutes(row.weather_refresh_minutes),
       showPrecip: !!row.weather_show_precip, showWind: !!row.weather_show_wind, showHumidity: !!row.weather_show_humidity, showCurrent: !!row.weather_show_current, showFeels: !!row.weather_show_feels,
-      keys, hasKey: Object.fromEntries(weatherProviderIds().map((provider) => [provider, !!keys[provider]])),
+      hasKey: Object.fromEntries(weatherProviderIds().map((provider) => [provider, !!keys[provider]])),
     };
   }
   app.get('/api/household/weather', requireAdult, (req, res) => {
-    const row = db.prepare('SELECT weather_enabled,weather_location,weather_units,weather_provider,weather_days,weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?').get(req.auth.household_id);
-    res.json(weatherSettings(row, weatherKeysFor(req.auth.household_id)));
+    const row = db.prepare('SELECT weather_enabled,weather_location,weather_units,weather_provider,weather_days,weather_refresh_minutes,weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?').get(req.auth.household_id);
+    const cached = db.prepare('SELECT fetched_at FROM weather_cache WHERE household_id=?').get(req.auth.household_id);
+    const attempt = weatherAttempts.get(req.auth.household_id);
+    const settings = weatherSettings(row, weatherKeysFor(req.auth.household_id));
+    const configured = !!row.weather_location && (settings.provider === 'open-meteo' || settings.hasKey[settings.provider]);
+    const state = !settings.enabled ? 'disabled' : !configured ? 'unconfigured' : attempt?.failed ? 'error' : !cached ? 'not_checked' : Date.now() - Date.parse(cached.fetched_at) >= settings.refreshMinutes * 60000 ? 'stale' : 'ok';
+    res.json({ ...settings, status: { state, lastSuccessAt: cached?.fetched_at || null, lastAttemptAt: attempt?.lastAttemptAt || null } });
   });
   app.put('/api/household/weather', requireAdult, (req, res) => {
     const id = req.auth.household_id;
-    const current = db.prepare('SELECT weather_enabled,weather_location,weather_units,weather_api_key,weather_provider,weather_days,weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?').get(id);
+    const current = db.prepare('SELECT weather_enabled,weather_location,weather_units,weather_api_key,weather_provider,weather_days,weather_refresh_minutes,weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?').get(id);
     const enabled = req.body.enabled === undefined ? current.weather_enabled : req.body.enabled ? 1 : 0;
     const location = req.body.location === undefined ? current.weather_location : text(req.body.location, 80);
     const units = req.body.units === undefined ? current.weather_units : req.body.units === 'c' ? 'c' : req.body.units === 'f' ? 'f' : null;
     const provider = req.body.provider === undefined ? (current.weather_provider || 'openweathermap') : text(req.body.provider, 20);
     const days = req.body.days === undefined ? current.weather_days || 5 : Number(req.body.days);
+    const refreshMinutes = req.body.refreshMinutes === undefined ? weatherRefreshMinutes(current.weather_refresh_minutes) : weatherRefreshMinutes(req.body.refreshMinutes, null);
     const flag = (name, column) => req.body[name] === undefined ? current[column] : req.body[name] ? 1 : 0;
     if (!weatherProviderIds().includes(provider)) return res.status(400).json({ error: 'Choose OpenWeatherMap, Open-Meteo, WeatherAPI.com, or Pirate Weather.' });
     if (!Number.isInteger(days) || days < 1 || days > 7) return res.status(400).json({ error: 'Choose 1 to 7 forecast days.' });
+    if (refreshMinutes === null) return res.status(400).json({ error: 'Choose a forecast update of 15 minutes, 30 minutes, 1 hour, or 3 hours.' });
     if (enabled && !location) return res.status(400).json({ error: 'Enter a location to show the forecast.' });
     if (!units) return res.status(400).json({ error: 'Choose Fahrenheit or Celsius.' });
     const keys = weatherKeysFor(id);
-    if (req.body.keys !== undefined && (typeof req.body.keys !== 'object' || Array.isArray(req.body.keys))) return res.status(400).json({ error: 'Save each provider key separately.' });
+    if (req.body.keys !== undefined && (!req.body.keys || typeof req.body.keys !== 'object' || Array.isArray(req.body.keys))) return res.status(400).json({ error: 'Save each provider key separately.' });
     for (const name of weatherProviderIds()) {
       if (!req.body.keys || req.body.keys[name] === undefined) continue;
       const key = weatherKeyValue(req.body.keys[name]);
@@ -340,19 +356,21 @@ export function createApp(db, dependencies = {}) {
     const activeKey = keys[provider] || null;
     const refreshForecast = location !== current.weather_location || units !== current.weather_units || provider !== (current.weather_provider || 'openweathermap') || activeKey !== (current.weather_provider === provider ? current.weather_api_key : weatherKeysFor(id)[provider]);
     db.transaction(() => {
-      db.prepare(`UPDATE households SET weather_enabled=?,weather_location=?,weather_units=?,weather_api_key=?,weather_provider=?,weather_days=?,
+      db.prepare(`UPDATE households SET weather_enabled=?,weather_location=?,weather_units=?,weather_api_key=?,weather_provider=?,weather_days=?,weather_refresh_minutes=?,
         weather_show_precip=?,weather_show_wind=?,weather_show_humidity=?,weather_show_current=?,weather_show_feels=? WHERE id=?`).run(
-        enabled, location, units, activeKey, provider, days, flag('showPrecip', 'weather_show_precip'), flag('showWind', 'weather_show_wind'), flag('showHumidity', 'weather_show_humidity'), flag('showCurrent', 'weather_show_current'), flag('showFeels', 'weather_show_feels'), id);
+        enabled, location, units, activeKey, provider, days, refreshMinutes, flag('showPrecip', 'weather_show_precip'), flag('showWind', 'weather_show_wind'), flag('showHumidity', 'weather_show_humidity'), flag('showCurrent', 'weather_show_current'), flag('showFeels', 'weather_show_feels'), id);
       const saveKey = db.prepare(`INSERT INTO weather_provider_keys(household_id,provider,api_key) VALUES (?,?,?)
         ON CONFLICT(household_id,provider) DO UPDATE SET api_key=excluded.api_key`);
       const deleteKey = db.prepare('DELETE FROM weather_provider_keys WHERE household_id=? AND provider=?');
       for (const name of weatherProviderIds()) if (keys[name]) saveKey.run(id, name, keys[name]); else deleteKey.run(id, name);
-      if (refreshForecast) db.prepare('DELETE FROM weather_cache WHERE household_id=?').run(id);
+      if (refreshForecast) {
+        db.prepare('DELETE FROM weather_cache WHERE household_id=?').run(id);
+        weatherAttempts.delete(id);
+      }
     })();
     emit(id, 'dashboard');
-    const saved = db.prepare('SELECT weather_enabled,weather_location,weather_units,weather_provider,weather_days,weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?').get(id);
+    const saved = db.prepare('SELECT weather_enabled,weather_location,weather_units,weather_provider,weather_days,weather_refresh_minutes,weather_show_precip,weather_show_wind,weather_show_humidity,weather_show_current,weather_show_feels FROM households WHERE id=?').get(id);
     const response = weatherSettings(saved, weatherKeysFor(id));
-    delete response.keys;
     res.json(response);
   });
   app.put('/api/household/theme', requireAdult, (req, res) => {
@@ -377,7 +395,10 @@ export function createApp(db, dependencies = {}) {
     res.json({ ok: true });
   });
   app.get('/api/devices', requireAdult, (req, res) => res.json(db.prepare("SELECT id,device_name,screen_width,screen_height,viewport_width,viewport_height,pixel_ratio,last_seen_at,created_at,expires_at FROM sessions WHERE household_id=? AND kind='device' ORDER BY created_at DESC").all(req.auth.household_id)));
-  app.delete('/api/devices/:id', requireAdult, (req, res) => { db.prepare("DELETE FROM sessions WHERE id=? AND household_id=? AND kind='device'").run(req.params.id, req.auth.household_id); res.status(204).end(); });
+  function closeScreenStreams(householdId, sessionId) {
+    for (const response of clients.get(householdId) || []) if (response.locals.sessionId === sessionId) response.end();
+  }
+  app.delete('/api/devices/:id', requireAdult, (req, res) => { const result = db.prepare("DELETE FROM sessions WHERE id=? AND household_id=? AND kind='device'").run(req.params.id, req.auth.household_id); if (result.changes) closeScreenStreams(req.auth.household_id, Number(req.params.id)); res.status(204).end(); });
 
   function childIdsFor(householdId, ids) {
     const requested = [...new Set((Array.isArray(ids) ? ids : [ids]).map(Number).filter(Boolean))];
@@ -536,7 +557,10 @@ export function createApp(db, dependencies = {}) {
   });
   app.delete('/api/reminders/:id', requireUser, (req, res) => { db.prepare('DELETE FROM local_reminders WHERE id=? AND household_id=?').run(req.params.id, req.auth.household_id); emit(req.auth.household_id, 'calendar'); res.status(204).end(); });
 
-  app.get('/api/calendar/feeds', requireAdult, (req, res) => res.json(db.prepare('SELECT id,name,color,enabled,sort_order,created_at,updated_at,1 configured FROM calendar_feeds WHERE household_id=? ORDER BY sort_order,id').all(req.auth.household_id)));
+  app.get('/api/calendar/feeds', requireAdult, (req, res) => {
+    const feeds = db.prepare('SELECT id,name,color,enabled,sort_order,created_at,updated_at,1 configured FROM calendar_feeds WHERE household_id=? ORDER BY sort_order,id').all(req.auth.household_id);
+    res.json(feeds.map((feed) => ({ ...feed, status: { ...(calendarAttempts.get(req.auth.household_id)?.get(feed.id) || { state: 'not_checked', lastSuccessAt: null, lastAttemptAt: null }), ...(!feed.enabled ? { state: 'disabled' } : {}) } })));
+  });
   app.post('/api/calendar/feeds', requireAdult, (req, res) => {
     const name = text(req.body.name, 80), color = text(req.body.color, 7), validation = validateFeedUrl(req.body.url);
     if (!name) return res.status(400).json({ error: 'Calendar name is required and must be 80 characters or fewer.' });
@@ -556,11 +580,13 @@ export function createApp(db, dependencies = {}) {
     if (!/^#[0-9a-f]{6}$/i.test(color || '')) return res.status(400).json({ error: 'Calendar color must be a six-digit hex color.' });
     if (!validation.valid) return res.status(400).json({ error: validation.error });
     db.prepare('UPDATE calendar_feeds SET name=?,url=?,color=?,enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(name, validation.url, color, req.body.enabled === undefined ? feed.enabled : +!!req.body.enabled, feed.id);
+    if (validation.url !== feed.url) calendarAttempts.get(req.auth.household_id)?.delete(feed.id);
     emit(req.auth.household_id, 'calendar'); res.json({ ok: true });
   });
   app.delete('/api/calendar/feeds/:id', requireAdult, (req, res) => {
     const result = db.prepare('DELETE FROM calendar_feeds WHERE id=? AND household_id=?').run(req.params.id, req.auth.household_id);
     if (!result.changes) return res.status(404).json({ error: 'Calendar feed not found.' });
+    calendarAttempts.get(req.auth.household_id)?.delete(Number(req.params.id));
     emit(req.auth.household_id, 'calendar'); res.status(204).end();
   });
   app.put('/api/calendar/feed-order', requireAdult, (req, res) => {
@@ -575,12 +601,17 @@ export function createApp(db, dependencies = {}) {
     const feeds = db.prepare('SELECT id,name,url,color,sort_order FROM calendar_feeds WHERE household_id=? AND enabled=1 ORDER BY sort_order,id').all(req.auth.household_id);
     const events = db.prepare('SELECT id,title,starts_at FROM local_reminders WHERE household_id=? AND starts_at>=? AND starts_at<? ORDER BY starts_at').all(req.auth.household_id, timeMin, timeMax).map((event) => ({ event: { id: `local:${event.id}`, title: event.title, start: { dateTime: event.starts_at }, end: null, color: null, calendar: 'Family Hub', source: 'local reminder' }, order: -1 }));
     const errors = [];
+    const statuses = calendarAttempts.get(req.auth.household_id) || new Map();
+    calendarAttempts.set(req.auth.household_id, statuses);
     for (const feed of feeds) {
+      const lastAttemptAt = new Date().toISOString();
       try {
         const feedEvents = await (dependencies.fetchFeedEvents || fetchFeedEvents)(feed, from, to);
         events.push(...feedEvents.map((event) => ({ event, order: feed.sort_order })));
+        statuses.set(feed.id, { state: 'ok', lastAttemptAt, lastSuccessAt: lastAttemptAt });
       } catch (error) {
-        errors.push({ feedId: feed.id, calendar: feed.name, message: `Could not load ${feed.name}: ${error.message}` });
+        statuses.set(feed.id, { state: 'error', lastAttemptAt, lastSuccessAt: statuses.get(feed.id)?.lastSuccessAt || null });
+        errors.push({ feedId: feed.id, calendar: feed.name, message: `Could not load ${feed.name}. Check the calendar connection and try again.` });
       }
     }
     events.sort((a, b) => a.order - b.order || (a.event.start.dateTime || a.event.start.date).localeCompare(b.event.start.dateTime || b.event.start.date));

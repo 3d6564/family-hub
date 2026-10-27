@@ -12,7 +12,7 @@ import { assertSafeRemoteUrl, parseFeedEvents, validateFeedUrl } from '../src/ic
 import { createApp } from '../src/app.js';
 import { releaseInfo } from '../src/release.js';
 import { compareVersions, createUpdateChecker } from '../src/updates.js';
-import { forecastFromOpenWeather, locationQueries, openMeteoCondition, pirateCondition, publicForecast, weatherApiCondition, weatherCondition } from '../src/weather.js';
+import { currentForecast, forecastFromOpenWeather, locationQueries, openMeteoCondition, pirateCondition, publicForecast, weatherApiCondition, weatherCondition, weatherRefreshMinutes } from '../src/weather.js';
 import { approveDisplayPairing, claimDisplayPairing, createDisplayPairing, createPairingCode, createSession, digest, hashPassword, verifyPassword } from '../src/auth.js';
 
 function database() { return openDatabase(':memory:'); }
@@ -23,7 +23,7 @@ test('release metadata stays adult-only and marks local builds as development', 
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   t.after(() => keys.forEach((key) => previous[key] === undefined ? delete process.env[key] : process.env[key] = previous[key]));
   for (const key of keys) delete process.env[key];
-  assert.deepEqual(releaseInfo(), { version: '0.3.2', revision: null, created: null, channel: 'development' });
+  assert.deepEqual(releaseInfo(), { version: '0.3.5', revision: null, created: null, channel: 'development' });
   const db = database(), home = household(db, 'Home'), password = await hashPassword('a secure password');
   const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'release@example.test', 'Adult', password).lastInsertRowid);
   const adultToken = createSession(db, { householdId: home, userId: adult });
@@ -173,7 +173,7 @@ test('a completed one-time chore leaves the list and yesterday does not count to
   db.prepare('UPDATE households SET timezone=? WHERE id=?').run('UTC', home);
   const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'tasks@example.test', 'Adult', password).lastInsertRowid);
   const once = Number(db.prepare("INSERT INTO chores(household_id,title,recurrence,due_on) VALUES (?,?,'once','2026-09-29')").run(home, 'One poster').lastInsertRowid);
-  const daily = Number(db.prepare("INSERT INTO chores(household_id,title,recurrence,due_on,days) VALUES (?,?,'daily','2026-09-28','1,2,3,4,5')").run(home, 'Make bed').lastInsertRowid);
+  const daily = Number(db.prepare("INSERT INTO chores(household_id,title,recurrence,due_on,days) VALUES (?,?,'daily','2026-09-28','0,1,2,3,4,5,6')").run(home, 'Make bed').lastInsertRowid);
   db.prepare('INSERT INTO chore_completions(chore_id,period_key) VALUES (?,?)').run(daily, '2026-09-28');
   const token = createSession(db, { householdId: home, userId: adult });
   const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); });
@@ -318,14 +318,22 @@ test('weather settings hide the API key and use OpenWeatherMap', async (t) => {
   assert.equal(JSON.stringify(saved).includes('secret-weather-key'), false);
   const listed = await (await fetch(`${base}/api/household/weather`, { headers })).json();
   assert.equal(listed.provider, 'openweathermap');
-  assert.equal(listed.keys.openweathermap, 'secret-weather-key');
+  assert.equal(listed.keys, undefined);
+  assert.equal(listed.hasKey.openweathermap, true);
+  assert.equal(JSON.stringify(listed).includes('secret-weather-key'), false);
+  assert.equal(listed.status.state, 'not_checked');
   assert.equal(listed.days, 5);
+  assert.equal(listed.refreshMinutes, 30);
+  assert.equal(saved.refreshMinutes, 30);
   const shown = await (await fetch(`${base}/api/dashboard`, { headers })).json();
   assert.equal(shown.weather.days.length, 5);
   assert.equal(shown.weather.days[0].high, 70);
   assert.equal(JSON.stringify(shown).includes('secret-weather-key'), false);
   await fetch(`${base}/api/dashboard`, { headers });
   assert.equal(calls.length, 1);
+  const connected = await (await fetch(`${base}/api/household/weather`, { headers })).json();
+  assert.equal(connected.status.state, 'ok');
+  assert.ok(connected.status.lastSuccessAt);
   assert.equal((await fetch(`${base}/api/household/weather`, { method: 'PUT', headers, body: JSON.stringify({ enabled: true, location: 'Chicago', units: 'c', apiKey: '' }) })).status, 200);
   assert.equal(db.prepare('SELECT weather_api_key FROM households WHERE id=?').get(home).weather_api_key, 'secret-weather-key');
   const swapped = await (await fetch(`${base}/api/household/weather`, { method: 'PUT', headers, body: JSON.stringify({ enabled: true, location: 'Chicago', units: 'f', provider: 'pirateweather', days: 2, showPrecip: true, showCurrent: true, keys: { pirateweather: 'pirate-key' } }) })).json();
@@ -333,22 +341,84 @@ test('weather settings hide the API key and use OpenWeatherMap', async (t) => {
   assert.equal(swapped.days, 2);
   assert.equal(JSON.stringify(swapped).includes('pirate-key'), false);
   const both = await (await fetch(`${base}/api/household/weather`, { headers })).json();
-  assert.equal(both.keys.openweathermap, 'secret-weather-key');
-  assert.equal(both.keys.pirateweather, 'pirate-key');
+  assert.equal(both.hasKey.openweathermap, true);
+  assert.equal(both.hasKey.pirateweather, true);
+  assert.equal(both.keys, undefined);
   const edited = await (await fetch(`${base}/api/household/weather`, { method: 'PUT', headers, body: JSON.stringify({ provider: 'pirateweather', keys: { pirateweather: 'pirate-key-2' } }) })).json();
   assert.equal(edited.hasKey.pirateweather, true);
-  assert.equal((await (await fetch(`${base}/api/household/weather`, { headers })).json()).keys.pirateweather, 'pirate-key-2');
-  assert.equal((await (await fetch(`${base}/api/household/weather`, { headers })).json()).keys.openweathermap, 'secret-weather-key');
+  assert.equal(db.prepare('SELECT api_key FROM weather_provider_keys WHERE household_id=? AND provider=?').get(home, 'pirateweather').api_key, 'pirate-key-2');
+  assert.equal(db.prepare('SELECT api_key FROM weather_provider_keys WHERE household_id=? AND provider=?').get(home, 'openweathermap').api_key, 'secret-weather-key');
+  assert.equal((await fetch(`${base}/api/household/weather`, { method: 'PUT', headers, body: JSON.stringify({ keys: null }) })).status, 400);
   const short = await (await fetch(`${base}/api/dashboard`, { headers })).json();
   assert.equal(short.weather.days.length, 2);
   assert.equal(short.weather.show.precip, true);
   assert.equal(publicForecast({ place: 'Chicago', units: 'f', days: [{ label: 'Fri', condition: 'clear', high: 70, low: 50, precip: 12.4 }] }).days[0].precip, 12);
   assert.equal((await fetch(`${base}/api/household/weather`, { method: 'PUT', headers, body: JSON.stringify({ enabled: true, provider: 'weatherapi', keys: { weatherapi: '' } }) })).status, 400);
+  assert.equal((await fetch(`${base}/api/household/weather`, { method: 'PUT', headers, body: JSON.stringify({ refreshMinutes: 10 }) })).status, 400);
+  const faster = await (await fetch(`${base}/api/household/weather`, { method: 'PUT', headers, body: JSON.stringify({ refreshMinutes: 15 }) })).json();
+  assert.equal(faster.refreshMinutes, 15);
+  assert.equal(db.prepare('SELECT weather_refresh_minutes FROM households WHERE id=?').get(home).weather_refresh_minutes, 15);
   const deviceHeaders = { cookie: `family_device_session=${createSession(db, { householdId: home, kind: 'device', deviceName: 'Wall' })}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1' };
   assert.equal((await fetch(`${base}/api/household/weather`, { headers: deviceHeaders })).status, 403);
+  assert.equal((await fetch(`${base}/api/household/weather`, { method: 'PUT', headers: { ...deviceHeaders, 'content-type': 'application/json' }, body: JSON.stringify({ refreshMinutes: 180 }) })).status, 403);
   const wall = await (await fetch(`${base}/api/dashboard`, { headers: deviceHeaders })).json();
   assert.equal(JSON.stringify(wall).includes('secret-weather-key'), false);
   assert.equal(JSON.stringify(wall).includes('pirate-key'), false);
+});
+
+test('weather cache follows the household refresh interval', async () => {
+  assert.equal(weatherRefreshMinutes(15), 15);
+  assert.equal(weatherRefreshMinutes('nope'), 30);
+  const db = database(), home = household(db, 'Home');
+  db.prepare("UPDATE households SET weather_enabled=1,weather_location='Chicago',weather_units='f',weather_provider='open-meteo',weather_refresh_minutes=15 WHERE id=?").run(home);
+  const row = db.prepare('SELECT * FROM households WHERE id=?').get(home);
+  let calls = 0;
+  const fetchForecast = async () => {
+    calls += 1;
+    return { place: 'Chicago', units: 'f', days: [{ label: 'Fri', condition: 'clear', high: 70, low: 50 }] };
+  };
+  const first = new Date('2026-10-25T12:00:00Z');
+  assert.equal((await currentForecast(db, row, fetchForecast, first)).days[0].high, 70);
+  await currentForecast(db, row, fetchForecast, new Date(first.getTime() + 14 * 60 * 1000));
+  assert.equal(calls, 1);
+  await currentForecast(db, row, fetchForecast, new Date(first.getTime() + 15 * 60 * 1000));
+  assert.equal(calls, 2);
+  db.close();
+});
+
+test('weather status reports failures, recovery, and household isolation without secrets', async (t) => {
+  const db = database(), home = household(db, 'Home'), other = household(db, 'Other');
+  const password = await hashPassword('a secure password');
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(home, 'status@example.test', 'Adult', password).lastInsertRowid);
+  const otherAdult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?, 'adult')").run(other, 'other-status@example.test', 'Other adult', password).lastInsertRowid);
+  db.prepare("UPDATE households SET weather_enabled=1,weather_location='Sample city',weather_provider='open-meteo' WHERE id=?").run(home);
+  let fail = false;
+  const server = createApp(db, { fetchForecast: async () => {
+    if (fail) throw new Error('secret-provider-url');
+    return { place: 'Sample city', units: 'f', days: [{ label: 'Sun', condition: 'clear', high: 70, low: 50 }] };
+  } }).listen(0);
+  t.after(() => { server.close(); db.close(); });
+  await new Promise(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const headers = { cookie: `family_user_session=${createSession(db, { householdId: home, userId: adult })}` };
+  const settings = () => fetch(`${base}/api/household/weather`, { headers }).then(response => response.json());
+  await fetch(`${base}/api/dashboard`, { headers });
+  const first = await settings();
+  assert.equal(first.status.state, 'ok');
+  db.prepare("UPDATE weather_cache SET fetched_at='2020-01-01T00:00:00.000Z' WHERE household_id=?").run(home);
+  assert.equal((await settings()).status.state, 'stale');
+  fail = true;
+  const stale = await (await fetch(`${base}/api/dashboard`, { headers })).json();
+  assert.equal(stale.weather.days[0].high, 70);
+  const failed = await settings();
+  assert.equal(failed.status.state, 'error');
+  assert.ok(failed.status.lastAttemptAt);
+  assert.equal(JSON.stringify(failed).includes('secret-provider-url'), false);
+  const isolated = await (await fetch(`${base}/api/household/weather`, { headers: { cookie: `family_user_session=${createSession(db, { householdId: other, userId: otherAdult })}` } })).json();
+  assert.deepEqual(isolated.status, { state: 'disabled', lastSuccessAt: null, lastAttemptAt: null });
+  fail = false;
+  await fetch(`${base}/api/dashboard`, { headers });
+  assert.equal((await settings()).status.state, 'ok');
 });
 
 test('adults can reorder every routine in their household', async (t) => {
@@ -417,7 +487,7 @@ test('one feed failure does not hide local reminders or other feed events', asyn
   db.prepare("INSERT INTO calendar_feeds(household_id,name,url,color) VALUES (?,?,?,?)").run(home, 'Also working', 'https://also.example/feed.ics', '#333333');
   db.prepare('INSERT INTO local_reminders(household_id,title,starts_at,created_by) VALUES (?,?,?,?)').run(home, 'Local', '2026-09-10T12:00:00.000Z', adult);
   const feedFetcher = async (feed) => {
-    if (feed.name === 'Broken') throw new Error('invalid calendar data');
+    if (feed.name === 'Broken') throw new Error('invalid calendar data at https://secret.example/private-feed');
     const start = feed.name === 'Also working' ? '2026-09-11T18:00:00.000Z' : '2026-09-11T09:00:00.000Z';
     return [{ id: 'feed:event', title: feed.name, start: { dateTime: start }, end: null, color: feed.color, calendar: feed.name, source: 'ical' }];
   };
@@ -428,7 +498,14 @@ test('one feed failure does not hide local reminders or other feed events', asyn
   const response = await fetch(`${base}/api/calendar/events?from=2026-09-01T00:00:00.000Z&to=2026-10-01T00:00:00.000Z`, { headers });
   const body = await response.json();
   assert.deepEqual(body.events.map((event) => event.title), ['Local', 'Also working', 'Working']);
-  assert.deepEqual(body.errors, [{ feedId: 1, calendar: 'Broken', message: 'Could not load Broken: invalid calendar data' }]);
+  assert.deepEqual(body.errors, [{ feedId: 1, calendar: 'Broken', message: 'Could not load Broken. Check the calendar connection and try again.' }]);
+  const statuses = await (await fetch(`${base}/api/calendar/feeds`, { headers })).json();
+  assert.equal(statuses.find(feed => feed.name === 'Broken').status.state, 'error');
+  assert.equal(statuses.find(feed => feed.name === 'Broken').status.lastSuccessAt, null);
+  assert.equal(statuses.find(feed => feed.name === 'Working').status.state, 'ok');
+  assert.ok(statuses.find(feed => feed.name === 'Working').status.lastSuccessAt);
+  assert.equal(JSON.stringify(statuses).includes('secret.example'), false);
+  assert.equal(JSON.stringify(body).includes('secret.example'), false);
 });
 
 test('the kiosk origin keeps secure cookies and rejects a different HTTP origin', async (t) => {
@@ -631,6 +708,90 @@ test('a screen code does not grant a session until an adult approves it', async 
   assert.equal(approveDisplayPairing(db, other, pairing.code, 'Late'), false);
   const local = createDisplayPairing(db);
   assert.equal(db.prepare('SELECT device_secret_hash FROM display_pairings WHERE user_code_hash=?').get(digest(local.code)).device_secret_hash, digest(local.secret));
+});
+
+test('an adult can reconnect the same screen without revoking its old access before claim', { timeout: 15000 }, async (t) => {
+  const previous = process.env.SITE_URL; process.env.SITE_URL = 'https://hub.example.test';
+  t.after(() => previous === undefined ? delete process.env.SITE_URL : process.env.SITE_URL = previous);
+  const db = database(), home = household(db, 'Home'), other = household(db, 'Other'), password = await hashPassword('a secure password');
+  const addUser = (house, email, role) => Number(db.prepare('INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?,?)').run(house, email, 'Sample user', password, role).lastInsertRowid);
+  const adult = addUser(home, 'reconnect@example.test', 'adult'), child = addUser(home, 'child-reconnect@example.test', 'child'), outsider = addUser(other, 'outside-reconnect@example.test', 'adult');
+  const oldToken = createSession(db, { householdId: home, kind: 'device', deviceName: 'Kitchen display' });
+  const old = db.prepare('SELECT * FROM sessions WHERE token_hash=?').get(digest(oldToken));
+  db.prepare('UPDATE sessions SET screen_width=1280,screen_height=720,viewport_width=1280,viewport_height=720,pixel_ratio=1 WHERE id=?').run(old.id);
+  const adultToken = createSession(db, { householdId: home, userId: adult });
+  const childToken = createSession(db, { householdId: home, userId: child });
+  const outsiderToken = createSession(db, { householdId: other, userId: outsider });
+  const server = createApp(db).listen(0);
+  t.after(() => { server.close(); db.close(); });
+  await new Promise(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const headers = { origin: 'https://hub.example.test', 'x-csrf-token': '1', 'content-type': 'application/json' };
+  const oldHeaders = { cookie: `family_device_session=${oldToken}` };
+  const pairing = createDisplayPairing(db);
+  const approve = (token, body, overrides = {}) => fetch(`${base}/api/screens/pair`, { method: 'POST', headers: { ...headers, cookie: `family_user_session=${token}`, ...overrides }, body: JSON.stringify(body) });
+  const body = { code: pairing.code, reconnectId: old.id, name: 'Must not rename' };
+  assert.equal((await approve(childToken, body)).status, 403);
+  assert.equal((await approve(outsiderToken, body)).status, 400);
+  assert.equal((await approve(adultToken, body, { origin: 'https://wrong.example.test' })).status, 403);
+  assert.equal((await approve(adultToken, body, { 'x-csrf-token': '' })).status, 403);
+  for (const reconnectId of [0, -1, 1.5, String(old.id), {}, []]) assert.equal((await approve(adultToken, { ...body, reconnectId })).status, 400);
+  const deviceApproval = await fetch(`${base}/api/screens/pair`, { method: 'POST', headers: { ...headers, ...oldHeaders }, body: JSON.stringify(body) });
+  assert.equal(deviceApproval.status, 403);
+  const userSessionId = db.prepare('SELECT id FROM sessions WHERE token_hash=?').get(digest(adultToken)).id;
+  assert.equal((await approve(adultToken, { ...body, reconnectId: userSessionId })).status, 400);
+  assert.equal((await approve(adultToken, body)).status, 200);
+  assert.equal((await approve(adultToken, body)).status, 200);
+  assert.equal((await approve(adultToken, { code: pairing.code })).status, 400);
+  assert.equal((await fetch(`${base}/api/dashboard`, { headers: oldHeaders })).status, 200);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM sessions WHERE household_id=? AND kind='device'").get(home).n, 1);
+
+  const abort = new AbortController(); t.after(() => abort.abort());
+  const stream = await fetch(`${base}/api/events/stream`, { headers: oldHeaders, signal: AbortSignal.any([abort.signal, AbortSignal.timeout(10000)]) });
+  const reader = stream.body.getReader(); await reader.read();
+  const claimed = await fetch(`${base}/api/display-pairings/status`, { method: 'POST', headers, body: JSON.stringify({ secret: pairing.secret, screenWidth: 1920, screenHeight: 1080, viewportWidth: 1920, viewportHeight: 1080, pixelRatio: 1 }) });
+  assert.deepEqual(await claimed.json(), { status: 'paired' });
+  const cookie = claimed.headers.get('set-cookie');
+  assert.match(cookie, /family_device_session=/); assert.match(cookie, /; Secure/); assert.doesNotMatch(cookie, /family_user_session=/);
+  assert.equal((await reader.read()).done, true);
+  const newCookie = cookie.split(';')[0];
+  assert.equal((await fetch(`${base}/api/dashboard`, { headers: oldHeaders })).status, 401);
+  assert.equal((await fetch(`${base}/api/dashboard`, { headers: { cookie: newCookie } })).status, 200);
+  const listed = await (await fetch(`${base}/api/devices`, { headers: { cookie: `family_user_session=${adultToken}` } })).json();
+  assert.equal(listed.length, 1); assert.equal(listed[0].id, old.id); assert.equal(listed[0].device_name, 'Kitchen display'); assert.equal(listed[0].created_at, old.created_at);
+  assert.equal(listed[0].viewport_width, 1920); assert.ok(listed[0].last_seen_at);
+  assert.equal(JSON.stringify(listed).includes(pairing.secret), false);
+  const again = await fetch(`${base}/api/display-pairings/status`, { method: 'POST', headers, body: JSON.stringify({ secret: pairing.secret }) });
+  assert.deepEqual(await again.json(), { status: 'paired' }); assert.equal(again.headers.get('set-cookie'), null);
+});
+
+test('expired, revoked, or superseded reconnect attempts cannot create duplicate screens', () => {
+  const db = database(), home = household(db, 'Home');
+  try {
+    const token = createSession(db, { householdId: home, kind: 'device', deviceName: 'Hall display' });
+    const screen = db.prepare('SELECT * FROM sessions WHERE token_hash=?').get(digest(token));
+    const expired = createDisplayPairing(db);
+    assert.equal(approveDisplayPairing(db, home, expired.code, 'Ignored', screen.id), true);
+    db.prepare("UPDATE display_pairings SET expires_at='2000-01-01T00:00:00.000Z' WHERE user_code_hash=?").run(digest(expired.code));
+    assert.deepEqual(claimDisplayPairing(db, expired.secret), { status: 'expired' });
+    assert.equal(db.prepare('SELECT token_hash FROM sessions WHERE id=?').get(screen.id).token_hash, digest(token));
+    const first = createDisplayPairing(db), second = createDisplayPairing(db);
+    assert.equal(approveDisplayPairing(db, home, first.code, '', screen.id), true);
+    assert.equal(approveDisplayPairing(db, home, second.code, '', screen.id), true);
+    assert.deepEqual(claimDisplayPairing(db, 'not-the-device-secret-at-all'), { status: 'expired' });
+    // Expired device access can be renewed without losing its screen identity.
+    db.prepare("UPDATE sessions SET expires_at='2000-01-01T00:00:00.000Z' WHERE id=?").run(screen.id);
+    const connected = claimDisplayPairing(db, first.secret);
+    assert.equal(connected.status, 'paired'); assert.ok(connected.token);
+    assert.equal(db.prepare('SELECT expires_at FROM sessions WHERE id=?').get(screen.id).expires_at > new Date().toISOString(), true);
+    assert.deepEqual(claimDisplayPairing(db, second.secret), { status: 'expired' });
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM sessions WHERE kind='device'").get().n, 1);
+    const revoked = createDisplayPairing(db);
+    assert.equal(approveDisplayPairing(db, home, revoked.code, '', screen.id), true);
+    db.prepare('DELETE FROM sessions WHERE id=?').run(screen.id);
+    assert.deepEqual(claimDisplayPairing(db, revoked.secret), { status: 'expired' });
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM sessions WHERE kind='device'").get().n, 0);
+  } finally { db.close(); }
 });
 
 test('temporary password exception and pairing codes stay limited to explicit helpers', async () => {
