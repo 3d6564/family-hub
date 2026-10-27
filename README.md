@@ -1,6 +1,19 @@
 # Family Hub
 
+![Family Hub — One home. One shared view.](docs/images/readme-header.svg)
+
 A private household calendar and task app for one home. It runs as one service with a local database.
+
+**[Run it](#run-it) · [Add a display](#add-a-display) · [Develop locally](#develop-locally)**
+
+## At a glance
+
+![Reference illustration of the Family Hub calendar with weather, routines, chores, and token balances](docs/images/family-hub-reference.svg)
+
+*Reference illustration based on the October 2026 UI, not a browser screenshot.
+All names, events, balances, and weather are invented sample data. Weather and
+token balances are optional. Phones use a compact agenda instead of this wide
+calendar layout.*
 
 ## Run it
 

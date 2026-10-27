@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="200" viewBox="0 0 1280 200" role="img" aria-labelledby="title desc">
+  <title id="title">Family Hub</title>
+  <desc id="desc">One home. One shared view. Private calendar, routines, chores, and paired wall displays.</desc>
+  <rect width="1280" height="200" rx="20" fill="#1d5138"/>
+  <g transform="translate(40 48)" fill="none" stroke="#dfebe1" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="0" y="12" width="88" height="82" rx="12"/>
+    <path d="M0 38h88M23 0v24M65 0v24M23 58h12m18 0h12M23 76h12m18 0h12"/>
+  </g>
+  <g font-family="system-ui, sans-serif" fill="#fffdf9">
+    <text x="164" y="80" font-size="42" font-weight="700">Family Hub</text>
+    <text x="164" y="118" font-size="23">One home. One shared view.</text>
+    <text x="164" y="154" font-size="18" fill="#c8dfd0">Private calendar · Routines &amp; chores · Paired wall displays</text>
+  </g>
+</svg>
