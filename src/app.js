@@ -614,7 +614,7 @@ export function createApp(db, dependencies = {}) {
         errors.push({ feedId: feed.id, calendar: feed.name, message: `Could not load ${feed.name}. Check the calendar connection and try again.` });
       }
     }
-    events.sort((a, b) => a.order - b.order || (a.event.start.dateTime || a.event.start.date).localeCompare(b.event.start.dateTime || b.event.start.date));
+    events.sort((a, b) => Date.parse(a.event.start.dateTime || a.event.start.date) - Date.parse(b.event.start.dateTime || b.event.start.date) || a.order - b.order);
     res.json({ events: events.map(({ event }) => event), errors });
   }));
 

@@ -477,6 +477,32 @@ test('iCal parsing expands recurring events and preserves all-day dates', () => 
   assert.deepEqual(events.find((event) => event.title === 'Day off').start, { date: '2026-09-02' });
 });
 
+test('calendar events sort by start time across feeds and local reminders', async (t) => {
+  const db = database(), home = household(db, 'Home');
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?,'adult')").run(home, 'ordering@example.test', 'Adult', 'unused').lastInsertRowid);
+  for (const [name, order] of [['First calendar', 0], ['Second calendar', 1]]) {
+    db.prepare('INSERT INTO calendar_feeds(household_id,name,url,color,sort_order) VALUES (?,?,?,?,?)').run(home, name, 'https://calendar.example.test/feed.ics', '#123456', order);
+  }
+  db.prepare('INSERT INTO local_reminders(household_id,title,starts_at,created_by) VALUES (?,?,?,?)').run(home, 'Local noon', '2026-11-05T12:00:00.000Z', adult);
+  const feedFetcher = async (feed) => (feed.sort_order === 0 ? [
+    { title: 'Evening', start: { dateTime: '2026-11-05T18:00:00Z' } },
+    { title: 'First tied event', start: { dateTime: '2026-11-05T10:00:00Z' } },
+    { title: 'All day', start: { date: '2026-11-05' } },
+  ] : [
+    { title: 'Next day', start: { dateTime: '2026-11-06T09:00:00Z' } },
+    { title: 'Morning', start: { dateTime: '2026-11-05T09:00:00Z' } },
+    { title: 'Second tied event', start: { dateTime: '2026-11-05T10:00:00Z' } },
+    { title: 'Earlier with offset', start: { dateTime: '2026-11-05T10:30:00+02:00' } },
+  ]).map((event, index) => ({ ...event, id: `${feed.id}:${index}`, calendar: feed.name, source: 'ical' }));
+  const token = createSession(db, { householdId: home, userId: adult }), server = createApp(db, { fetchFeedEvents: feedFetcher }).listen(0);
+  t.after(() => { server.close(); db.close(); }); await new Promise((resolve) => server.once('listening', resolve));
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/calendar/events?from=2026-11-01T00:00:00Z&to=2026-12-01T00:00:00Z`, { headers: { cookie: `family_user_session=${token}` } });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(body.errors, []);
+  assert.deepEqual(body.events.map(event => event.title), ['All day', 'Earlier with offset', 'Morning', 'First tied event', 'Second tied event', 'Local noon', 'Evening', 'Next day']);
+});
+
 test('one feed failure does not hide local reminders or other feed events', async (t) => {
   const previous = process.env.APP_ORIGIN; process.env.APP_ORIGIN = 'http://127.0.0.1';
   t.after(() => previous === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previous);
@@ -497,7 +523,7 @@ test('one feed failure does not hide local reminders or other feed events', asyn
   assert.equal((await fetch(`${base}/api/calendar/feed-order`, { method: 'PUT', headers, body: JSON.stringify({ ids: [1, 3, 2] }) })).status, 200);
   const response = await fetch(`${base}/api/calendar/events?from=2026-09-01T00:00:00.000Z&to=2026-10-01T00:00:00.000Z`, { headers });
   const body = await response.json();
-  assert.deepEqual(body.events.map((event) => event.title), ['Local', 'Also working', 'Working']);
+  assert.deepEqual(body.events.map((event) => event.title), ['Local', 'Working', 'Also working']);
   assert.deepEqual(body.errors, [{ feedId: 1, calendar: 'Broken', message: 'Could not load Broken. Check the calendar connection and try again.' }]);
   const statuses = await (await fetch(`${base}/api/calendar/feeds`, { headers })).json();
   assert.equal(statuses.find(feed => feed.name === 'Broken').status.state, 'error');
