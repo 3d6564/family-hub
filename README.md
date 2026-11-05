@@ -37,6 +37,9 @@ Settings keep separate Display, Screens, Calendars, Routines, Weather, Household
 Access, and Integrations sections. All section tabs remain visible on phones.
 Routines configure the household widget independently of calendars.
 
+Calendar events appear in start-time order across calendars and local reminders.
+Calendar order breaks ties when events start at the same time.
+
 - Preference forms use explicit Save buttons, including token visibility.
   Unsaved edits stay in this browser tab. Leaving a section or the settings view
   asks before discarding edits. Failed saves keep the draft for retry.
