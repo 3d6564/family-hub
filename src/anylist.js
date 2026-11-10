@@ -34,6 +34,7 @@ function unseal(value, key, householdId) {
 /** Keep AnyList credentials, selected-list cache, and serialized provider operations household-scoped. */
 export function createAnyListConnector(db, { key = process.env.FAMILY_HUB_INTEGRATION_KEY, clientFactory = createAnyListClient, notify = () => {} } = {}) {
   const queues = new Map(), attempts = new Map();
+  const selectedFor = householdId => db.prepare('SELECT * FROM anylist_selected_lists WHERE household_id=? ORDER BY sort_order,list_id').all(householdId);
   const rowFor = householdId => db.prepare('SELECT * FROM anylist_connections WHERE household_id=?').get(householdId);
   let keyReady = false;
   try { encryptionKey(key); keyReady = true; } catch {}
@@ -53,28 +54,43 @@ export function createAnyListConnector(db, { key = process.env.FAMILY_HUB_INTEGR
     } });
   }
 
+  function syncLegacy(householdId) {
+    // Keep the first selection available to 0.4.0 clients during an application update.
+    const first = selectedFor(householdId)[0];
+    db.prepare('UPDATE anylist_connections SET list_id=?,list_name=?,items_json=?,last_success_at=? WHERE household_id=?')
+      .run(first?.list_id || null, first?.list_name || null, first?.items_json || '[]', first?.last_success_at || null, householdId);
+  }
+
   function cache(householdId, row, lists) {
-    const selected = lists.find(list => list.id === row.list_id);
-    if (row.list_id && !selected) throw new AnyListError('The selected AnyList list is unavailable. Ask an adult to select a list again.', 409);
     const now = new Date().toISOString();
-    db.prepare('UPDATE anylist_connections SET lists_json=?,list_name=?,items_json=?,last_success_at=? WHERE household_id=?')
-      .run(JSON.stringify(lists.map(({ id, name }) => ({ id, name }))), selected?.name || null, JSON.stringify(selected?.items || []), now, householdId);
+    db.transaction(() => {
+      db.prepare('UPDATE anylist_connections SET lists_json=? WHERE household_id=?')
+        .run(JSON.stringify(lists.map(({ id, name }) => ({ id, name }))), householdId);
+      for (const selected of selectedFor(householdId)) {
+        const list = lists.find(entry => entry.id === selected.list_id);
+        if (list) db.prepare('UPDATE anylist_selected_lists SET list_name=?,items_json=?,last_success_at=?,unavailable=0 WHERE household_id=? AND list_id=?')
+          .run(list.name, JSON.stringify(list.items), now, householdId, list.id);
+        else db.prepare('UPDATE anylist_selected_lists SET unavailable=1 WHERE household_id=? AND list_id=?').run(householdId, selected.list_id);
+      }
+      syncLegacy(householdId);
+    })();
     attempts.set(householdId, { at: Date.now(), failed: false });
-    return selected;
   }
 
   function settings(householdId) {
-    const row = rowFor(householdId), attempt = attempts.get(householdId);
-    return { keyReady, connected: !!row, enabled: !!row?.enabled, listId: row?.list_id || '', lists: row ? JSON.parse(row.lists_json) : [],
+    const row = rowFor(householdId), attempt = attempts.get(householdId), selected = selectedFor(householdId);
+    return { keyReady, connected: !!row, enabled: !!row?.enabled, listId: selected[0]?.list_id || '', listIds: selected.map(list => list.list_id), lists: row ? JSON.parse(row.lists_json) : [],
       source: 'AnyList', lastSuccessAt: row?.last_success_at || null,
-      state: !row ? 'unconfigured' : !row.enabled ? 'disabled' : attempt?.failed ? 'error' : 'ok' };
+      state: !row ? 'unconfigured' : !row.enabled ? 'disabled' : attempt?.failed || selected.some(list => list.unavailable) ? 'error' : 'ok' };
   }
 
   function snapshot(householdId) {
     const row = rowFor(householdId), attempt = attempts.get(householdId);
-    if (!row?.enabled || !row.list_id) return { enabled: false, name: '', items: [], stale: false, lastSuccessAt: null };
-    return { enabled: true, name: row.list_name, items: JSON.parse(row.items_json), lastSuccessAt: row.last_success_at,
-      stale: !!attempt?.failed || !row.last_success_at || Date.now() - Date.parse(row.last_success_at) >= refreshMs };
+    const selected = row?.enabled ? selectedFor(householdId) : [];
+    const lists = selected.map(list => ({ id: list.list_id, name: list.list_name, items: JSON.parse(list.items_json), lastSuccessAt: list.last_success_at,
+      stale: !!attempt?.failed || !!list.unavailable || !list.last_success_at || Date.now() - Date.parse(list.last_success_at) >= refreshMs }));
+    const first = lists[0];
+    return { enabled: !!first, lists, name: first?.name || '', items: first?.items || [], stale: first?.stale || false, lastSuccessAt: first?.lastSuccessAt || null };
   }
 
   async function fetchLists(householdId, row) {
@@ -93,7 +109,7 @@ export function createAnyListConnector(db, { key = process.env.FAMILY_HUB_INTEGR
     read(householdId, force = false) { return exclusive(householdId, async () => {
       const row = rowFor(householdId), attempt = attempts.get(householdId);
       const due = !attempt || Date.now() - attempt.at >= (force ? 5000 : refreshMs);
-      if (row?.enabled && row.list_id && due) {
+      if (row?.enabled && selectedFor(householdId).length && due) {
         try { await fetchLists(householdId, row); } catch { /* Keep the last selected-list cache available during provider failure. */ }
       }
       return snapshot(householdId);
@@ -108,34 +124,35 @@ export function createAnyListConnector(db, { key = process.env.FAMILY_HUB_INTEGR
       session ||= loggedIn;
       if (!validAnyListSession(session)) throw new AnyListError();
       const lists = await provider.lists();
-      db.prepare(`INSERT INTO anylist_connections(household_id,credentials,lists_json) VALUES (?,?,?)
-        ON CONFLICT(household_id) DO UPDATE SET credentials=excluded.credentials,lists_json=excluded.lists_json,
-        enabled=0,list_id=NULL,list_name=NULL,items_json='[]',last_success_at=NULL`)
-        .run(householdId, seal(session, key, householdId), JSON.stringify(lists.map(({ id, name }) => ({ id, name }))));
+      db.transaction(() => {
+        db.prepare(`INSERT INTO anylist_connections(household_id,credentials,lists_json) VALUES (?,?,?)
+          ON CONFLICT(household_id) DO UPDATE SET credentials=excluded.credentials,lists_json=excluded.lists_json,
+          enabled=0,list_id=NULL,list_name=NULL,items_json='[]',last_success_at=NULL`)
+          .run(householdId, seal(session, key, householdId), JSON.stringify(lists.map(({ id, name }) => ({ id, name }))));
+        db.prepare('DELETE FROM anylist_selected_lists WHERE household_id=?').run(householdId);
+      })();
       attempts.delete(householdId); notify(householdId);
       return settings(householdId);
     }); },
-    configure(householdId, listId, enabled) { return exclusive(householdId, async () => {
-      const row = rowFor(householdId);
-      if (!row) throw new AnyListError('Connect AnyList before selecting a list.', 409);
-      if (typeof enabled !== 'boolean' || (enabled && !idText(listId))) throw new AnyListError('Select a list and choose whether to enable it.', 400);
-      if (!enabled) {
-        const selectedId = listId === undefined || listId === '' ? row.list_id : listId;
-        const selected = JSON.parse(row.lists_json).find(list => list.id === selectedId);
-        if (selectedId !== null && (!idText(selectedId) || (!selected && selectedId !== row.list_id))) throw new AnyListError('Select an available AnyList list.', 400);
-        const changed = selectedId !== row.list_id;
-        // Disabled configuration uses saved discovery data, never a provider request.
-        db.prepare('UPDATE anylist_connections SET enabled=0,list_id=?,list_name=?,items_json=?,last_success_at=? WHERE household_id=?')
-          .run(selectedId, selected?.name || (changed ? null : row.list_name), changed ? '[]' : row.items_json, changed ? null : row.last_success_at, householdId);
-      } else {
-        // Verify the resource before replacing the previous selected-list cache.
-        const lists = await client(householdId, row).lists();
-        if (!lists.some(list => list.id === listId)) throw new AnyListError('Select an available AnyList list.', 400);
-        db.transaction(() => {
-          db.prepare('UPDATE anylist_connections SET enabled=1,list_id=? WHERE household_id=?').run(listId, householdId);
-          cache(householdId, { ...row, list_id: listId }, lists);
-        })();
-      }
+    configure(householdId, listIds, enabled) { return exclusive(householdId, async () => {
+      const row = rowFor(householdId), previous = selectedFor(householdId);
+      if (!row) throw new AnyListError('Connect AnyList before selecting lists.', 409);
+      // A scalar selection is still accepted from 0.4.0 clients.
+      const ids = listIds === undefined || listIds === '' ? previous.map(list => list.list_id) : typeof listIds === 'string' ? [listIds] : listIds;
+      if (typeof enabled !== 'boolean' || !Array.isArray(ids) || ids.length > 200 || ids.some(id => !idText(id)) || new Set(ids).size !== ids.length || (enabled && !ids.length)) throw new AnyListError('Select available lists and choose whether to enable them.', 400);
+      const lists = enabled ? await client(householdId, row).lists() : JSON.parse(row.lists_json);
+      if (ids.some(id => !lists.some(list => list.id === id) && (enabled || !previous.some(list => list.list_id === id)))) throw new AnyListError('Select an available AnyList list.', 400);
+      db.transaction(() => {
+        db.prepare('DELETE FROM anylist_selected_lists WHERE household_id=?').run(householdId);
+        const insert = db.prepare('INSERT INTO anylist_selected_lists(household_id,list_id,list_name,sort_order,items_json,last_success_at,unavailable) VALUES (?,?,?,?,?,?,?)');
+        ids.forEach((id, order) => {
+          const old = previous.find(list => list.list_id === id), list = lists.find(entry => entry.id === id);
+          insert.run(householdId, id, list?.name || old.list_name, order, old?.items_json || '[]', old?.last_success_at || null, old?.unavailable || 0);
+        });
+        db.prepare('UPDATE anylist_connections SET enabled=? WHERE household_id=?').run(enabled ? 1 : 0, householdId);
+        if (enabled) cache(householdId, row, lists);
+        else syncLegacy(householdId);
+      })();
       notify(householdId); return settings(householdId);
     }); },
     refreshCatalog(householdId) { return exclusive(householdId, async () => {
@@ -152,13 +169,17 @@ export function createAnyListConnector(db, { key = process.env.FAMILY_HUB_INTEGR
     }); },
     mutate(householdId, action, input) { return exclusive(householdId, async () => {
       const row = rowFor(householdId);
-      if (!row?.enabled || !row.list_id) throw new AnyListError('The AnyList list is disabled. Ask an adult to enable it.', 409);
+      if (!row?.enabled || !selectedFor(householdId).length) throw new AnyListError('The AnyList list is disabled. Ask an adult to enable it.', 409);
+      const listId = input.listId === undefined ? selectedFor(householdId)[0].list_id : input.listId;
+      if (!idText(listId) || !selectedFor(householdId).some(list => list.list_id === listId)) throw new AnyListError('This list is not shared. Refresh Lists or ask an adult to select it.', 404);
       const provider = client(householdId, row);
       try {
         let lists;
         try { lists = await provider.lists(); }
         catch (error) { attempts.set(householdId, { at: Date.now(), failed: true }); throw error; }
-        const selected = cache(householdId, row, lists);
+        cache(householdId, row, lists);
+        const selected = lists.find(list => list.id === listId);
+        if (!selected) throw new AnyListError('This AnyList list is unavailable. Ask an adult to check the selection.', 409);
         let item;
         if (action === 'add') {
           if (typeof input.name !== 'string' || !input.name.trim() || input.name.trim().length > 500) throw new AnyListError('Enter an item name of up to 500 characters.', 400);
@@ -177,10 +198,11 @@ export function createAnyListConnector(db, { key = process.env.FAMILY_HUB_INTEGR
             item = { ...item, checked: input.checked };
           } else if (action !== 'delete' || !item.checked) throw new AnyListError('Only completed items can be deleted.', 409);
         }
-        await provider.change(row.list_id, action, item);
+        await provider.change(listId, action, item);
         // Reflect only acknowledged writes; the next poll reconciles with the provider.
         const items = action === 'delete' ? selected.items.filter(entry => entry.id !== item.id) : action === 'add' ? [...selected.items, item] : selected.items.map(entry => entry.id === item.id ? item : entry);
-        db.prepare('UPDATE anylist_connections SET items_json=? WHERE household_id=?').run(JSON.stringify(items), householdId);
+        db.prepare('UPDATE anylist_selected_lists SET items_json=? WHERE household_id=? AND list_id=?').run(JSON.stringify(items), householdId, listId);
+        syncLegacy(householdId);
         notify(householdId);
         return snapshot(householdId);
       } catch (error) {
@@ -204,10 +226,13 @@ export function mountAnyList(app, db, options) {
   const home = req => req.auth.household_id;
   app.get('/api/integrations/anylist', requireAdult, route((req, res) => res.json(connector.settings(home(req)))));
   app.post('/api/integrations/anylist/connect', requireAdult, route(async (req, res) => res.json(await connector.connect(home(req), req.body.email, req.body.password))));
-  app.put('/api/integrations/anylist', requireAdult, route(async (req, res) => res.json(await connector.configure(home(req), req.body.listId, req.body.enabled))));
+  app.put('/api/integrations/anylist', requireAdult, route(async (req, res) => res.json(await connector.configure(home(req), req.body.listIds ?? req.body.listId, req.body.enabled))));
   app.post('/api/integrations/anylist/refresh', requireAdult, route(async (req, res) => res.json(await connector.refreshCatalog(home(req)))));
   app.delete('/api/integrations/anylist', requireAdult, route(async (req, res) => { await connector.disconnect(home(req)); res.status(204).end(); }));
   app.get('/api/lists/anylist', route(async (req, res) => res.json(await connector.read(home(req), req.query.refresh === '1'))));
+  app.post('/api/lists/anylist/:listId/items', route(async (req, res) => res.json(await connector.mutate(home(req), 'add', { listId: req.params.listId, name: req.body.name }))));
+  app.patch('/api/lists/anylist/:listId/items/:id', route(async (req, res) => res.json(await connector.mutate(home(req), 'check', { listId: req.params.listId, id: req.params.id, checked: req.body.checked }))));
+  app.delete('/api/lists/anylist/:listId/items/:id', requireAdult, route(async (req, res) => res.json(await connector.mutate(home(req), 'delete', { listId: req.params.listId, id: req.params.id }))));
   app.post('/api/lists/anylist/items', route(async (req, res) => res.json(await connector.mutate(home(req), 'add', { name: req.body.name }))));
   app.patch('/api/lists/anylist/items/:id', route(async (req, res) => res.json(await connector.mutate(home(req), 'check', { id: req.params.id, checked: req.body.checked }))));
   app.delete('/api/lists/anylist/items/:id', requireAdult, route(async (req, res) => res.json(await connector.mutate(home(req), 'delete', { id: req.params.id }))));

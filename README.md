@@ -59,10 +59,17 @@ Calendar order breaks ties when events start at the same time.
 
 ## Shared lists
 
-**Lists** shows one selected AnyList list. Adults and paired displays can add
+**Lists** shows selected lists from one AnyList account. Up to three appear
+together on wide screens; phones and larger selections use tabs.
+Adults and paired displays can add
 items and check or uncheck them. Only adults can connect AnyList or delete
 completed items. Main navigation is on the left on wide screens and at the
 bottom on phones.
+
+Paired displays show an on-screen keyboard when a text field receives focus.
+After 60 seconds without activity in Lists, they return to Calendar. Unfinished
+item drafts remain available until the page is reloaded. Personal devices keep
+their native keyboard and do not return automatically.
 
 The host owner must set a separate encryption key before an adult connects in
 **Settings → Integrations**. This connection uses an unofficial protocol and
