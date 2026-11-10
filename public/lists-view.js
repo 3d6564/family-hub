@@ -23,7 +23,8 @@ export function createListsView({ api, settingsForms, getMe }) {
         const row = document.createElement('div'); row.className = 'check-row list-row';
         const label = document.createElement('label'), input = document.createElement('input'), copy = document.createElement('span');
         input.type = 'checkbox'; input.checked = checked; input.dataset.listItem = item.id;
-        copy.textContent = `${item.quantity ? `${item.quantity} ` : ''}${item.name}`;
+        const quantity = [item.quantity, item.quantityUnit].filter(Boolean).join(' ');
+        copy.textContent = `${quantity ? `${quantity} ` : ''}${item.name}`;
         if (item.notes) { const note = document.createElement('small'); note.className = 'muted'; note.textContent = item.notes; copy.append(note); }
         label.append(input, copy); row.append(label);
         input.onchange = () => action(async () => api(`/api/lists/anylist/items/${encodeURIComponent(item.id)}`, { method: 'PATCH', body: JSON.stringify({ checked: input.checked }) }));

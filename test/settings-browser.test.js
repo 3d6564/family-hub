@@ -24,7 +24,7 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   const pairingRequests = [];
   let displayMode = false, failListSave = false;
   let anylist = { keyReady: true, connected: false, enabled: false, listId: '', lists: [], state: 'unconfigured', lastSuccessAt: null };
-  let listItems = [{ id: 'milk', name: 'Milk', notes: '', quantity: '', checked: false }, { id: 'bread', name: 'Bread', notes: '', quantity: '', checked: true }];
+  let listItems = [{ id: 'milk', name: 'Milk', notes: '', quantity: '2', quantityUnit: 'L', checked: false }, { id: 'bread', name: 'Bread', notes: '', quantity: '', checked: true }];
   const listSnapshot = () => ({ enabled: anylist.enabled, name: anylist.enabled ? 'Sample groceries' : '', items: anylist.enabled ? listItems : [], lastSuccessAt: '2026-10-25T12:00:00Z', stale: false });
   let weather = { enabled: false, location: 'Sample city', provider: 'open-meteo', units: 'f', days: 5, refreshMinutes: 30, hasKey: { openweathermap: true }, status: { state: 'disabled' } };
   let feeds = [{ id: 1, name: 'Sample calendar', color: '#4285f4', enabled: 1, status: { state: 'not_checked' } }];
@@ -44,7 +44,7 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     if (route === '/api/calendar/events') return json({ events: [], errors: [] });
     if (route === '/api/tokens') return json({ people: [] });
     if (route === '/api/members') return json(sampleMembers);
-    if (route === '/api/integrations/anylist/connect') { anylist = { ...anylist, connected: true, lists: [{ id: 'groceries', name: 'Sample groceries' }], state: 'disabled' }; return json(anylist); }
+    if (route === '/api/integrations/anylist/connect') { anylist = { ...anylist, connected: true, lists: [{ id: 'groceries', name: 'Sample groceries' }, { id: 'household', name: 'Sample household' }], state: 'disabled' }; return json(anylist); }
     if (route === '/api/integrations/anylist') {
       if (req.method === 'PUT') anylist = { ...anylist, ...body, state: body.enabled ? 'ok' : 'disabled' };
       return json(anylist);
@@ -284,6 +284,13 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     await click('#anylist-connect-form button');
     await until(() => evaluate('document.querySelector("#anylist-connect-form .form-status").textContent === "Saved."'));
     assert.equal(await evaluate('document.querySelector("#anylist-connect-form [name=password]").value'), '');
+    await fill('#anylist-config-form [name=listId]', 'household');
+    await click('#anylist-config-form button');
+    await until(() => evaluate('document.querySelector("#anylist-config-form .form-status").textContent === "Saved."'));
+    assert.equal(anylist.listId, 'household');
+    assert.equal(anylist.enabled, false);
+    await click('#menu-button');
+    await until(() => evaluate('document.querySelector("#anylist-config-form [name=listId]").value === "household"'));
     await fill('#anylist-config-form [name=listId]', 'groceries');
     await click('#anylist-config-form [name=enabled]');
     assert.equal(anylist.enabled, false);
@@ -295,6 +302,7 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   await t.test('Lists add, check, completed deletion, text escaping, and phone/sidebar layout work', async () => {
     await click('[data-nav="lists"] b');
     await until(() => evaluate('document.querySelectorAll("[data-list-item]").length === 2'));
+    assert.match(await evaluate('document.querySelector("[data-list-item=milk]").closest("label").textContent'), /2 L Milk/);
     for (const width of [390, 760, 1024, 1440, 1920]) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
       const bounds = await evaluate('(()=>{const nav=document.querySelector("#app>nav").getBoundingClientRect(),list=document.querySelector("#shared-list").getBoundingClientRect();return {overflow:document.documentElement.scrollWidth>innerWidth,navLeft:nav.left,navTop:nav.top,navWidth:nav.width,listLeft:list.left,listWidth:list.width,visible:getComputedStyle(document.querySelector("#shared-list")).display!=="none"};})()');

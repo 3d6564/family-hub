@@ -91,8 +91,9 @@ export function createAnyListClient({ session, fetchImpl = fetch, saveSession = 
             if (!safeString(item.identifier, 160) || !safeString(item.name, 500) || itemIds.has(item.identifier) || (item.listId && item.listId !== list.identifier) || item.details.length > 10000) throw new Error('Invalid item');
             itemIds.add(item.identifier);
             const quantity = item.quantityPb?.amount || item.deprecatedQuantity || '';
-            if (quantity.length > 200) throw new Error('Invalid quantity');
-            return { id: item.identifier, name: item.name, notes: item.details || '', checked: !!item.checked, quantity };
+            const quantityUnit = item.quantityPb?.unit || '';
+            if (quantity.length > 200 || quantityUnit.length > 200) throw new Error('Invalid quantity');
+            return { id: item.identifier, name: item.name, notes: item.details || '', checked: !!item.checked, quantity, quantityUnit };
           }) };
         });
       } catch { throw new AnyListError('AnyList returned an unsupported list response. Ask an adult to check the connection.'); }
@@ -102,7 +103,7 @@ export function createAnyListClient({ session, fetchImpl = fetch, saveSession = 
       if (!handlers[action]) throw new AnyListError('This AnyList action is not supported.', 400);
       const operation = { metadata: { operationId: crypto.randomUUID().replaceAll('-', '').toUpperCase(), handlerId: handlers[action] }, listId, listItemId: item.id };
       if (action === 'check') operation.updatedValue = item.checked ? 'y' : 'n';
-      if (action === 'add' || action === 'delete') operation.listItem = { identifier: item.id, listId, name: item.name, checked: !!item.checked, details: item.notes || '', ...(item.quantity ? { quantityPb: { amount: item.quantity } } : {}) };
+      if (action === 'add' || action === 'delete') operation.listItem = { identifier: item.id, listId, name: item.name, checked: !!item.checked, details: item.notes || '', ...(item.quantity || item.quantityUnit ? { quantityPb: { amount: item.quantity || '', unit: item.quantityUnit || '' } } : {}) };
       const form = new FormData();
       form.append('operations', new Blob([operationsType.encode({ operations: [operation] }).finish()]), 'operations');
       await authorized('/data/shopping-lists/update', form);

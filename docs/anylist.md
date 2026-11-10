@@ -46,6 +46,8 @@ matching completed item. It does not create another entry. Item matching for thi
 reuse ignores letter case; changes and deletion use item IDs. Family Hub does
 not expose list creation, recipes, meal planning, item renaming, or notes editing.
 
+Displayed quantities keep their units, such as **2 kg Rice**.
+
 The Lists view checks for updates about once a minute while open. The server
 shares a one-minute refresh window across readers. **Refresh** can check sooner,
 but not more than once every five seconds. Writes fetch current provider data
@@ -54,7 +56,11 @@ offline delivery. Provider failures keep the last selected-list cache visible
 with a warning, without blocking calendars, weather, routines, or chores.
 
 **Disable** hides the shared list and stops automatic fetching, while retaining
-settings and tokens. **Refresh available lists** is an explicit adult request
+settings and tokens. You can save a different selected list while disabled without
+contacting AnyList; changing the selection clears the previous list's cached items
+and fetch time.
+
+**Refresh available lists** is an explicit adult request
 that can still contact AnyList while disabled. **Reconnect** replaces the saved
 account and clears the selected list after sign-in succeeds; select and enable a
 list again. **Disconnect AnyList** removes saved connection data and stops sync.

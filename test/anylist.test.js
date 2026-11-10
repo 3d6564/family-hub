@@ -12,7 +12,7 @@ const key = 'ab'.repeat(32);
 const session = { clientId: 'sample-client', accessToken: 'sample-access-token', refreshToken: 'sample-refresh-token' };
 const sampleLists = () => [
   { id: 'groceries', name: 'Groceries', items: [
-    { id: 'milk', name: 'Milk', notes: '', quantity: '', checked: false },
+    { id: 'milk', name: 'Milk', notes: '', quantity: '2', quantityUnit: 'L', checked: false },
     { id: 'bread', name: 'Bread', notes: '', quantity: '', checked: true },
   ] },
   { id: 'other', name: 'Other list', items: [{ id: 'other-item', name: 'Do not cache me', checked: false }] },
@@ -48,9 +48,55 @@ test('AnyList client decodes known wire bytes and sends ID-based checked operati
     assert.equal(operation.listId, 'L'); assert.equal(operation.listItemId, 'i'); assert.equal(operation.updatedValue, 'y');
     return new Response(null, { status: 204 });
   } });
-  assert.deepEqual(await client.lists(), [{ id: 'L', name: 'Groceries', items: [{ id: 'i', name: 'Milk', notes: '', quantity: '', checked: false }] }]);
+  assert.deepEqual(await client.lists(), [{ id: 'L', name: 'Groceries', items: [{ id: 'i', name: 'Milk', notes: '', quantity: '', quantityUnit: '', checked: false }] }]);
   await client.change('L', 'check', { id: 'i', checked: true });
   assert.deepEqual(calls, ['https://www.anylist.com/data/user-data/get', 'https://www.anylist.com/data/shopping-lists/update']);
+});
+
+test('AnyList preserves quantity units in normalized data and delete operations', async () => {
+  const bytes = userDataType.encode({ shoppingListsResponse: { newLists: [{
+    identifier: 'groceries', name: 'Groceries', items: [{ identifier: 'rice', name: 'Rice', checked: true, quantityPb: { amount: '2', unit: 'kg' } }],
+  }] } }).finish();
+  const client = createAnyListClient({ session, fetchImpl: async (url, options) => {
+    if (url.endsWith('/data/user-data/get')) return new Response(bytes);
+    const operation = operationsType.decode(new Uint8Array(await options.body.get('operations').arrayBuffer())).operations[0];
+    assert.equal(operation.listItem.quantityPb.amount, '2');
+    assert.equal(operation.listItem.quantityPb.unit, 'kg');
+    return new Response(null, { status: 204 });
+  } });
+  const item = (await client.lists())[0].items[0];
+  assert.equal(item.quantity, '2');
+  assert.equal(item.quantityUnit, 'kg');
+  await client.change('groceries', 'delete', item);
+});
+
+test('AnyList saves disabled selection without fetching and clears only the previous list cache', async (t) => {
+  const db = openDatabase(':memory:'); t.after(() => db.close());
+  const home = Number(db.prepare("INSERT INTO households(name,timezone) VALUES ('Sample home','UTC')").run().lastInsertRowid);
+  const { state, factory } = fakeProvider();
+  const connector = createAnyListConnector(db, { key, clientFactory: factory });
+  await connector.connect(home, 'adult@example.test', 'sample-password');
+  let settings = await connector.configure(home, 'other', false);
+  assert.equal(settings.listId, 'other', 'a list can be selected before enabling');
+  await connector.configure(home, 'groceries', true);
+  const before = db.prepare('SELECT * FROM anylist_connections WHERE household_id=?').get(home);
+  const calls = state.calls.length;
+  state.fail = true;
+  await connector.configure(home, 'groceries', false);
+  assert.equal(db.prepare('SELECT items_json FROM anylist_connections WHERE household_id=?').get(home).items_json, before.items_json);
+  settings = await connector.configure(home, 'other', false);
+  assert.equal(settings.listId, 'other');
+  assert.equal(settings.enabled, false);
+  const saved = db.prepare('SELECT * FROM anylist_connections WHERE household_id=?').get(home);
+  assert.equal(saved.list_name, 'Other list');
+  assert.equal(saved.items_json, '[]');
+  assert.equal(saved.last_success_at, null);
+  assert.equal(saved.credentials, before.credentials);
+  assert.equal(state.calls.length, calls, 'disabled configuration must not fetch');
+  await assert.rejects(connector.configure(home, 'unknown', false), /available AnyList list/);
+  assert.equal(connector.settings(home).listId, 'other');
+  assert.equal(createAnyListConnector(db, { key, clientFactory: factory }).settings(home).listId, 'other', 'disabled selection survives connector restart');
+  assert.equal(state.calls.length, calls);
 });
 
 test('AnyList login retains tokens but not password, and refresh persists rotated tokens before retry', async () => {
@@ -115,6 +161,7 @@ test('AnyList cache saves selected items only, encrypts tokens, isolates failure
   const restarted = createAnyListConnector(db, { key, clientFactory: factory });
   const cached = await restarted.read(home);
   assert.equal(cached.stale, true); assert.equal(cached.items.length, 2);
+  assert.equal(cached.items.find(item => item.id === 'milk').quantityUnit, 'L', 'cached quantities keep their units during failures');
   const calls = state.calls.length;
   await restarted.read(home); assert.equal(state.calls.length, calls, 'provider failures are throttled');
   assert.equal(JSON.stringify(cached).includes('sample-secret'), false);

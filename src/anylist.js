@@ -120,7 +120,13 @@ export function createAnyListConnector(db, { key = process.env.FAMILY_HUB_INTEGR
       if (!row) throw new AnyListError('Connect AnyList before selecting a list.', 409);
       if (typeof enabled !== 'boolean' || (enabled && !idText(listId))) throw new AnyListError('Select a list and choose whether to enable it.', 400);
       if (!enabled) {
-        db.prepare('UPDATE anylist_connections SET enabled=0 WHERE household_id=?').run(householdId);
+        const selectedId = listId === undefined || listId === '' ? row.list_id : listId;
+        const selected = JSON.parse(row.lists_json).find(list => list.id === selectedId);
+        if (selectedId !== null && (!idText(selectedId) || (!selected && selectedId !== row.list_id))) throw new AnyListError('Select an available AnyList list.', 400);
+        const changed = selectedId !== row.list_id;
+        // Disabled configuration uses saved discovery data, never a provider request.
+        db.prepare('UPDATE anylist_connections SET enabled=0,list_id=?,list_name=?,items_json=?,last_success_at=? WHERE household_id=?')
+          .run(selectedId, selected?.name || (changed ? null : row.list_name), changed ? '[]' : row.items_json, changed ? null : row.last_success_at, householdId);
       } else {
         // Verify the resource before replacing the previous selected-list cache.
         const lists = await client(householdId, row).lists();
