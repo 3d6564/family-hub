@@ -1,6 +1,6 @@
 {
   "name": "family-hub",
-  "version": "0.3.6",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -12,11 +12,12 @@
     "bootstrap": "node src/bootstrap.js",
     "pairing-code": "node src/pairing-code.js",
     "test": "node --test --test-concurrency=1",
-    "check": "node --check src/server.js && node --check src/release.js && node --check src/updates.js && node --check src/app.js && node --check public/app.js && node --check public/routine-view.js"
+    "check": "node --check src/server.js && node --check src/release.js && node --check src/updates.js && node --check src/app.js && node --check public/app.js && node --check public/routine-view.js && node --check src/anylist.js && node --check src/anylist-client.js && node --check src/anylist-protocol.js && node --check public/lists-view.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.2.0",
     "express": "^5.1.0",
-    "node-ical": "^0.27.2"
+    "node-ical": "^0.27.2",
+    "protobufjs": "8.8.1"
   }
 }

@@ -16,12 +16,16 @@ async function until(check) {
   throw new Error('Browser condition timed out.');
 }
 
-test('settings retain drafts, isolate failures, and work at phone and desktop widths', { skip: !browserPath, timeout: 60000 }, async (t) => {
+test('settings retain drafts, isolate failures, and work at phone and desktop widths', { skip: !browserPath, timeout: 90000 }, async (t) => {
   const publicRoot = new URL('../public/', import.meta.url);
   const household = { name: 'Sample home', timezone: 'UTC', weekStartsOn: 0, theme: 'green', dimEnabled: false, tokenBoardEnabled: false };
   let failWeatherLoad = true, failWeatherSave = false, weatherSaveCount = 0, tokenSaves = 0, screenDeletes = 0, restores = 0, holdSave;
   let failScreenPair = false;
   const pairingRequests = [];
+  let displayMode = false, failListSave = false;
+  let anylist = { keyReady: true, connected: false, enabled: false, listId: '', lists: [], state: 'unconfigured', lastSuccessAt: null };
+  let listItems = [{ id: 'milk', name: 'Milk', notes: '', quantity: '2', quantityUnit: 'L', checked: false }, { id: 'bread', name: 'Bread', notes: '', quantity: '', checked: true }];
+  const listSnapshot = () => ({ enabled: anylist.enabled, name: anylist.enabled ? 'Sample groceries' : '', items: anylist.enabled ? listItems : [], lastSuccessAt: '2026-10-25T12:00:00Z', stale: false });
   let weather = { enabled: false, location: 'Sample city', provider: 'open-meteo', units: 'f', days: 5, refreshMinutes: 30, hasKey: { openweathermap: true }, status: { state: 'disabled' } };
   let feeds = [{ id: 1, name: 'Sample calendar', color: '#4285f4', enabled: 1, status: { state: 'not_checked' } }];
   let sampleMembers = [{ id: 1, name: 'Sample adult', role: 'adult', has_email: 1 }, { id: 2, name: 'Sample child', role: 'child', has_email: 0 }];
@@ -33,13 +37,29 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     let body = {};
     if (['POST', 'PUT', 'PATCH'].includes(req.method)) { let text = ''; for await (const chunk of req) text += chunk; body = JSON.parse(text || '{}'); }
     if (route === '/api/setup') return json({ needsSetup: false });
-    if (route === '/api/me') return json({ user: { id: 1, name: 'Sample adult', role: 'adult' }, household });
+    if (route === '/api/me') return json({ user: displayMode ? null : { id: 1, name: 'Sample adult', role: 'adult' }, device: displayMode ? 'Sample wall' : null, household });
     if (route === '/api/version') return json({ version: 'sample-deployment' });
     if (route === '/api/release') return json({ version: '0.3.3', channel: 'release' });
     if (route === '/api/dashboard') return json({ today: '2026-10-25', routines: [], chores: [], plans: [], weather: null });
     if (route === '/api/calendar/events') return json({ events: [], errors: [] });
     if (route === '/api/tokens') return json({ people: [] });
     if (route === '/api/members') return json(sampleMembers);
+    if (route === '/api/integrations/anylist/connect') { anylist = { ...anylist, connected: true, lists: [{ id: 'groceries', name: 'Sample groceries' }, { id: 'household', name: 'Sample household' }], state: 'disabled' }; return json(anylist); }
+    if (route === '/api/integrations/anylist') {
+      if (req.method === 'PUT') anylist = { ...anylist, ...body, state: body.enabled ? 'ok' : 'disabled' };
+      return json(anylist);
+    }
+    if (route === '/api/lists/anylist') return json(listSnapshot());
+    if (route === '/api/lists/anylist/items') {
+      if (failListSave) return json({ error: 'Sample list save failure. Refresh before trying again.' }, 502);
+      listItems.push({ id: `item-${listItems.length}`, name: body.name, notes: '', quantity: '', checked: false }); return json(listSnapshot());
+    }
+    if (route.startsWith('/api/lists/anylist/items/')) {
+      const id = decodeURIComponent(route.split('/').at(-1));
+      if (req.method === 'DELETE') listItems = listItems.filter(item => item.id !== id);
+      else listItems = listItems.map(item => item.id === id ? { ...item, checked: body.checked } : item);
+      return json(listSnapshot());
+    }
     if (route === '/api/members/2' && req.method === 'PATCH') { sampleMembers = sampleMembers.map(member => member.id === 2 ? { ...member, ...body } : member); return json({ ok: true }); }
     if (route === '/api/household/weather') {
       if (req.method === 'GET') return failWeatherLoad ? json({ error: 'Sample weather load failure.' }, 503) : json(weather);
@@ -253,6 +273,81 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     await tab('display');
     await evaluate('document.querySelector("#settings-tab-display").focus();document.querySelector("#settings-tab-display").dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowRight",bubbles:true}))');
     assert.equal(await evaluate('document.activeElement.dataset.settingsTab'), 'screens');
+  });
+
+  await t.test('AnyList setup saves explicitly and does not retain the sign-in password', async () => {
+    await tab('integrations');
+    await until(() => evaluate('!!document.querySelector("#anylist-connect-form")'));
+    await fill('#anylist-connect-form [name=email]', 'sample@example.test');
+    await fill('#anylist-connect-form [name=password]', 'sample-password');
+    assert.equal(anylist.connected, false);
+    await click('#anylist-connect-form button');
+    await until(() => evaluate('document.querySelector("#anylist-connect-form .form-status").textContent === "Saved."'));
+    assert.equal(await evaluate('document.querySelector("#anylist-connect-form [name=password]").value'), '');
+    await fill('#anylist-config-form [name=listId]', 'household');
+    await click('#anylist-config-form button');
+    await until(() => evaluate('document.querySelector("#anylist-config-form .form-status").textContent === "Saved."'));
+    assert.equal(anylist.listId, 'household');
+    assert.equal(anylist.enabled, false);
+    await click('#menu-button');
+    await until(() => evaluate('document.querySelector("#anylist-config-form [name=listId]").value === "household"'));
+    await fill('#anylist-config-form [name=listId]', 'groceries');
+    await click('#anylist-config-form [name=enabled]');
+    assert.equal(anylist.enabled, false);
+    await click('#anylist-config-form button');
+    await until(() => evaluate('document.querySelector("#anylist-config-form .form-status").textContent === "Saved."'));
+    assert.equal(anylist.enabled, true);
+  });
+
+  await t.test('Lists add, check, completed deletion, text escaping, and phone/sidebar layout work', async () => {
+    await click('[data-nav="lists"] b');
+    await until(() => evaluate('document.querySelectorAll("[data-list-item]").length === 2'));
+    assert.match(await evaluate('document.querySelector("[data-list-item=milk]").closest("label").textContent'), /2 L Milk/);
+    for (const width of [390, 760, 1024, 1440, 1920]) {
+      await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+      const bounds = await evaluate('(()=>{const nav=document.querySelector("#app>nav").getBoundingClientRect(),list=document.querySelector("#shared-list").getBoundingClientRect();return {overflow:document.documentElement.scrollWidth>innerWidth,navLeft:nav.left,navTop:nav.top,navWidth:nav.width,listLeft:list.left,listWidth:list.width,visible:getComputedStyle(document.querySelector("#shared-list")).display!=="none"};})()');
+      assert.equal(bounds.overflow, false, `Lists overflow at ${width}`); assert.equal(bounds.visible, true);
+      if (width > 760) { assert.equal(bounds.navLeft, 0); assert.equal(bounds.navTop, 0); assert.equal(bounds.navWidth, 104); assert.ok(bounds.listLeft >= 104); }
+      else { assert.ok(bounds.navTop >= 930); assert.ok(bounds.listWidth <= width); }
+    }
+    await fill('#list-add-form [name=name]', 'Eggs <img src=x>');
+    failListSave = true; await click('#list-add-form button');
+    await until(() => evaluate('document.querySelector("#list-status").textContent.includes("Sample list save failure")'));
+    assert.equal(await evaluate('document.querySelector("#list-add-form [name=name]").value'), 'Eggs <img src=x>');
+    failListSave = false; await click('#list-add-form button');
+    await until(() => evaluate('document.querySelectorAll("[data-list-item]").length === 3'));
+    assert.equal(await evaluate('document.querySelectorAll("#list-items img").length'), 0);
+    assert.equal(await evaluate('document.querySelector("#list-add-form [name=name]").value'), '');
+    await click('[data-list-item="milk"]');
+    await until(() => evaluate(`!!document.querySelector('[aria-label="Delete completed item Milk"]')`));
+    acceptDialog = true; await click('[aria-label="Delete completed item Milk"]'); acceptDialog = false;
+    await until(() => evaluate('!document.querySelector("[data-list-item=milk]")'));
+    assert.equal(listItems.some(item => item.id === 'milk'), false);
+  });
+
+  await t.test('calendar remains within the viewport after the sidebar change', async () => {
+    await click('[data-nav="calendar"] b');
+    await until(() => evaluate('document.querySelector("#clock").textContent.length > 0'));
+    for (const width of [390, 760, 800, 1024, 1440, 1920]) {
+      await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+      const layout = await evaluate('(()=>{const overflow=document.documentElement.scrollWidth>innerWidth;return {overflow,wide:overflow?[...document.querySelectorAll("#app *")].filter(node=>{const rect=node.getBoundingClientRect();return rect.width && rect.right>innerWidth+1}).slice(0,12).map(node=>({tag:node.tagName,id:node.id,classes:node.className,right:node.getBoundingClientRect().right})):[]};})()');
+      assert.equal(layout.overflow, false, `Calendar overflow at ${width}: ${JSON.stringify(layout.wide)}`);
+      assert.equal(await evaluate('getComputedStyle(document.querySelector("#shared-list")).display'), 'none');
+    }
+  });
+
+  await t.test('paired-display Lists has add/check controls but no delete controls', async () => {
+    displayMode = true;
+    await send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/?paired-test=1#lists` });
+    await until(() => evaluate('document.body.dataset.view === "lists" && document.querySelector("#identity").textContent.includes("paired display") && !!document.querySelector("[data-list-item=bread]")'));
+    assert.equal(await evaluate('document.querySelectorAll("#list-items button").length'), 0);
+    assert.equal(await evaluate('document.querySelector("#list-add-form").hidden'), false);
+    await click('[data-list-item="bread"]');
+    await until(() => listItems.find(item => item.id === 'bread').checked === false);
+    await until(() => evaluate('!document.querySelector("#shared-list").hasAttribute("aria-busy")'));
+    await fill('#list-add-form [name=name]', 'Apples'); await click('#list-add-form button');
+    await until(() => listItems.some(item => item.name === 'Apples'));
+    assert.equal(await evaluate('document.querySelectorAll("#list-items button").length'), 0);
   });
   assert.deepEqual(exceptions, []);
 });

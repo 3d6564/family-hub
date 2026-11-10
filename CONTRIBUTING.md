@@ -8,6 +8,31 @@ the full definition of done.
 
 Use Node.js 22 or later and npm.
 
+If Node.js is not installed, use the Node.js 22 development container:
+
+```bash
+podman pull docker.io/library/node:22-bookworm
+bash scripts/dev-node.sh ci
+bash scripts/dev-node.sh run check
+bash scripts/dev-node.sh test
+```
+
+Set `CONTAINER_RUNTIME=docker` to use Docker instead. Dependencies and npm's
+cache live in named development volumes. The container mounts source files,
+not `.env`, household data, or backups. Checks run without network access.
+This environment does not start or change the deployed service.
+
+For real-browser checks against synthetic data, build the optional development
+image, then run the same tests with Chromium enabled:
+
+```bash
+podman build -f scripts/dev-browser.Dockerfile -t localhost/family-hub-dev-browser:node22 scripts
+FAMILY_HUB_DEV_BROWSER=1 bash scripts/dev-node.sh test
+```
+
+The image build downloads Chromium. Tests still run without network access.
+Chromium is not added to the production image or application dependencies.
+
 ```bash
 npm ci
 cp .env.example .env

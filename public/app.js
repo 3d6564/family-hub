@@ -1,6 +1,7 @@
 import { calendarGridWindow, eventSpanDays } from './calendar-view.js';
 import { routinePeriodGroups } from './routine-view.js';
 import { createSettingsForms } from './settings-forms.js';
+import { createListsView } from './lists-view.js';
 const $=(s,p=document)=>p.querySelector(s), $$=(s,p=document)=>[...p.querySelectorAll(s)];
 let me, dashboard, members=[], routineCatalog=[], choreCatalog=[], feedCatalog=[], calendarEvents=[], weatherKeys={}, deploymentVersion, cursor=new Date(), openEvent, pinnedMonth=false, shownDay=new Date().toLocaleDateString('en-CA'), shownRoutinePeriod, setupMode=false;
 let weatherHasKeys = {};
@@ -9,6 +10,7 @@ const settingsForms = createSettingsForms({
   onDiscard: form => { if (form.id === 'weather-form') { weatherKeys = {}; form.dataset.activeProvider = ''; showWeatherProvider(form.elements.weatherProvider.value); } if(form.id==='screen-pair-form')syncScreenPairMode(); },
 });
 const settingsRoot = () => $('.settings');
+const listsView = createListsView({ api, settingsForms, getMe: () => me });
 const editableSettings = form => !settingsForms.dirty(form) && !settingsForms.busy(form);
 window.addEventListener('beforeunload', event => { if (settingsForms.pending(settingsRoot()).length || settingsRoot().querySelector('[aria-busy="true"]')) { event.preventDefault(); event.returnValue = ''; } });
 cursor=new Date(cursor.getFullYear(),cursor.getMonth(),1);
@@ -282,16 +284,17 @@ function activateSettingsTab(id) {
   return true;
 }
 function openView(name) {
-  if (name === 'plans' || !['calendar', 'chores', 'routines', 'settings', 'tokens'].includes(name)) name = 'calendar';
+  if (name === 'plans' || !['calendar', 'chores', 'routines', 'settings', 'tokens', 'lists'].includes(name)) name = 'calendar';
   if (document.body.dataset.view === 'settings' && name !== 'settings' && !settingsForms.guard(settingsRoot())) { location.hash = 'settings'; return; }
   document.body.dataset.view = name;
   $$('.view').forEach(view => view.classList.toggle('mobile-active', view.dataset.view === name));
-  $$('[data-nav]').forEach(button => button.classList.toggle('active', button.dataset.nav === name));
-  if (name === 'settings' && me.user?.role === 'adult') { setupDisplayTitleSetting(); setupRoutineScheduleSetting(); setupSettingsTabs(); addRoutineSettingsTab(); setupTokenBoardSetting(); setupScreensSettings(); settingsForms.watch(settingsRoot()); }
+  $$('[data-nav]').forEach(button => { const active = button.dataset.nav === name; button.classList.toggle('active', active); if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); });
+  if (name === 'settings' && me.user?.role === 'adult') { setupDisplayTitleSetting(); setupRoutineScheduleSetting(); setupSettingsTabs(); addRoutineSettingsTab(); setupTokenBoardSetting(); setupScreensSettings(); listsView.settings(); settingsForms.watch(settingsRoot()); }
+  if (name === 'lists') listsView.refresh();
   if (name === 'tokens') renderTokens(); if (name === 'calendar') renderTokenBoard(); if (dashboard) renderWeather(); location.hash = name;
 }
 document.addEventListener('click',async e=>{const button=e.target.closest('[data-feed-move]');if(!button)return;const index=feedCatalog.findIndex(feed=>feed.id===+button.dataset.feedMove),swap=index+(button.dataset.direction==='up'?-1:1);if(index<0||swap<0||swap>=feedCatalog.length)return;const ids=feedCatalog.map(feed=>feed.id);[ids[index],ids[swap]]=[ids[swap],ids[index]];await settingsAction(button,async()=>{await api('/api/calendar/feed-order',{method:'PUT',body:JSON.stringify({ids})});await Promise.all([loadSettings(['feeds']),renderCalendar()])})});
-let stream;async function refreshCalendar(){me=await api('/api/me');await renderCalendar()}function connectEvents(){stream?.close();stream=new EventSource('/api/events/stream');for(const name of ['tasks','dashboard'])stream.addEventListener(name,refresh);stream.addEventListener('calendar',refreshCalendar)}
+let stream;async function refreshCalendar(){me=await api('/api/me');await renderCalendar()}function connectEvents(){stream?.close();stream=new EventSource('/api/events/stream');for(const name of ['tasks','dashboard'])stream.addEventListener(name,refresh);stream.addEventListener('calendar',refreshCalendar);stream.addEventListener('lists',()=>{if(document.body.dataset.view==='lists')listsView.refresh()})}
 
 $('#login-form').onsubmit=async e=>{e.preventDefault();try{await api('/api/login',{method:'POST',body:JSON.stringify(formJson(e.target))});$('#auth-error').textContent='';await load()}catch(error){$('#auth-error').textContent=error.message}};
 document.addEventListener('change',async e=>{if(!e.target.dataset.routine&&!e.target.dataset.chore)return;try{if(e.target.dataset.routine)await api(`/api/routines/${e.target.dataset.routine}/toggle`,{method:'POST',body:JSON.stringify({childId:+e.target.dataset.child})});if(e.target.dataset.chore)await api(`/api/chores/${e.target.dataset.chore}/toggle`,{method:'POST'});await refresh();if(me.user?.role==='adult')await loadSettings(['tasks'])}catch(error){toast(error.message)}});
@@ -311,7 +314,7 @@ document.addEventListener('click',async e=>{
     if(!confirm(screen?`Revoke access for “${button.dataset.name}”? This screen will need approval to reconnect.`:`Delete calendar “${button.dataset.name}”? Its events will leave Family Hub. The source calendar is unchanged.`)||!settingsForms.guard(root))return;
     await settingsAction(button,async()=>{await api(screen?`/api/devices/${button.dataset.device}`:`/api/calendar/feeds/${button.dataset.deleteFeed}`,{method:'DELETE'});if(screen)await setupScreensSettings();else{await renderCalendar();await loadSettings(['feeds'])}});return;
   }
-  try{const eventButton=e.target.closest('[data-event]');if(eventButton)showEvent(calendarEvents[+eventButton.dataset.event]);if(e.target.hasAttribute('data-remove-plan'))e.target.parentElement.remove();if(e.target.dataset.nav)openView(e.target.dataset.nav)}catch(error){toast(error.message)}
+  try{const eventButton=e.target.closest('[data-event]');if(eventButton)showEvent(calendarEvents[+eventButton.dataset.event]);if(e.target.hasAttribute('data-remove-plan'))e.target.parentElement.remove();const nav=e.target.closest('[data-nav]');if(nav)openView(nav.dataset.nav)}catch(error){toast(error.message)}
 });
 document.addEventListener('click',async e=>{const button=e.target.closest('[data-refresh-screen]');if(!button)return;button.disabled=true;try{await setupScreensSettings();toast('Screen preview refreshed.')}catch(error){toast(error.message)}finally{button.disabled=false}});
 document.addEventListener('submit',async e=>{if(!e.target.dataset.feedEdit)return;e.preventDefault();const form=e.target;const saved=await settingsForms.run(form,async()=>{const values=formJson(form);values.enabled=form.elements.enabled.checked;await api(`/api/calendar/feeds/${form.dataset.feedEdit}`,{method:'PATCH',body:JSON.stringify(values)});form.elements.url.value=''});if(saved){await renderCalendar();await loadSettings(['feeds']);const editor=$(`[data-feed-edit="${form.dataset.feedEdit}"]`);if(editor)settingsForms.mark(editor,'Saved.')}});

@@ -57,6 +57,18 @@ Calendar order breaks ties when events start at the same time.
   restoration. Restore replaces household data and restarts the service. Save a
   current backup first. Updates remain a host-owner operation.
 
+## Shared lists
+
+**Lists** shows one selected AnyList list. Adults and paired displays can add
+items and check or uncheck them. Only adults can connect AnyList or delete
+completed items. Main navigation is on the left on wide screens and at the
+bottom on phones.
+
+The host owner must set a separate encryption key before an adult connects in
+**Settings → Integrations**. This connection uses an unofficial protocol and
+needs a live-account check before relying on it. See the
+[AnyList setup and limits](docs/anylist.md).
+
 ## Add a display
 
 The display computer only runs Chromium. It does not run the application.

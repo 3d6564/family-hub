@@ -12,6 +12,7 @@ import { ensureTokenLedger, postChoreEarning, reverseChoreEarning, tokenLedger, 
 import { releaseInfo } from './release.js';
 import { createUpdateChecker } from './updates.js';
 import { currentForecast, fetchWeather, weatherProviderIds, weatherRefreshMinutes } from './weather.js';
+import { mountAnyList } from './anylist.js';
 
 const publicDir = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'public');
 const clients = new Map();
@@ -146,6 +147,7 @@ export function createApp(db, dependencies = {}) {
 
   const auth = authenticate(db);
   app.use('/api', auth, csrf);
+  mountAnyList(app, db, { key: dependencies.integrationKey, clientFactory: dependencies.anylistClientFactory, notify: householdId => emit(householdId, 'lists') });
   app.get('/api/me', (req, res) => {
     const household = db.prepare('SELECT id,name,display_title displayTitle,timezone,week_starts_on weekStartsOn,dim_enabled dimEnabled,dim_start dimStart,dim_end dimEnd,theme,token_board_enabled tokenBoardEnabled,routine_morning_start routineMorningStart,routine_afternoon_start routineAfternoonStart,routine_bedtime_start routineBedtimeStart FROM households WHERE id=?').get(req.auth.household_id);
     household.tokenBoardEnabled = !!household.tokenBoardEnabled;

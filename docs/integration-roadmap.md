@@ -44,7 +44,7 @@ pairing attempts cannot create a replacement screen silently.
 
 1. Keep iCal feeds as the default calendar connection. Add Google Calendar OAuth only when two-way event editing is required. Add Microsoft Outlook after the shared connector model supports OAuth tokens, account reconnection, sync errors, and selected calendars.
 2. Add Todoist as the first task connector. Map one shared project or selected sections to display lists. Start with read-only display and completion sync. Keep rewards, child assignments, and routine periods in Family Hub until Todoist mapping proves they fit the household workflow.
-3. Add AnyList only after the task connector model is stable. Its first scope is a selected grocery or household list, with one declared source of truth.
+3. AnyList was approved ahead of Todoist as an independent Lists tab. It uses one selected grocery or household list, with AnyList as the source of truth. Adults manage the connection. Signed-in household members and paired displays can add and check items; only adults can delete completed items. The connection is experimental pending a live-account check. See [AnyList setup and limits](anylist.md). A shared Todoist task connector model remains deferred.
 4. Add meal planning after lists. Use a meal-plan provider only if it supports a stable, documented account connection. Otherwise keep meals local.
 5. Consider photos, traffic, smart-home status, and school feeds only as independent display widgets. Each must be separately enabled, so one failed provider cannot hide the calendar or tasks.
 
