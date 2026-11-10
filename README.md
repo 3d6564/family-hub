@@ -66,6 +66,11 @@ items and check or uncheck them. Only adults can connect AnyList or delete
 completed items. Main navigation is on the left on wide screens and at the
 bottom on phones.
 
+Open **Appearance** from the main navigation to choose from 16 device palettes,
+or select **Use household default**. The choice is saved in that browser.
+Light/dark mode and any scheduled dark mode remain separate. The household
+default remains one of Green, Slate, Blue, or Warm.
+
 Paired displays show an on-screen keyboard when a text field receives focus.
 After 60 seconds without activity in Lists, they return to Calendar. Unfinished
 item drafts remain available until the page is reloaded. Personal devices keep

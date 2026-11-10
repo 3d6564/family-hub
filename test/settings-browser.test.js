@@ -84,6 +84,7 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     if (route === '/api/devices/3' && req.method === 'DELETE') { screenDeletes += 1; screens = []; res.writeHead(204); return res.end(); }
     if (route === '/api/household/token-board') { tokenSaves += 1; household.tokenBoardEnabled = body.enabled; return json({ tokenBoardEnabled: body.enabled }); }
     if (route === '/api/household/restore') { restores += 1; return json({ ok: true }); }
+    if (route === '/api/household/theme' && req.method === 'PUT') { household.theme = body.theme; return json(body); }
     if (route.startsWith('/api/household/')) return json(body);
     if (route.startsWith('/api/')) return json([]);
     const filename = route === '/' ? 'index.html' : route.slice(1);
@@ -347,8 +348,9 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     await until(() => evaluate('document.querySelector("#clock").textContent.length > 0'));
     for (const width of [390, 760, 800, 1024, 1440, 1920]) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
-      const layout = await evaluate('(()=>{const overflow=document.documentElement.scrollWidth>innerWidth;return {overflow,wide:overflow?[...document.querySelectorAll("#app *")].filter(node=>{const rect=node.getBoundingClientRect();return rect.width && rect.right>innerWidth+1}).slice(0,12).map(node=>({tag:node.tagName,id:node.id,classes:node.className,right:node.getBoundingClientRect().right})):[]};})()');
-      assert.equal(layout.overflow, false, `Calendar overflow at ${width}: ${JSON.stringify(layout.wide)}`);
+      await until(() => evaluate(`innerWidth === ${width}`));
+      const layout = await evaluate('(()=>{const overflow=document.documentElement.scrollWidth>innerWidth;return {innerWidth,bodyView:document.body.dataset.view,app:document.querySelector("#app").getBoundingClientRect().toJSON(),layout:document.querySelector(".layout").getBoundingClientRect().toJSON(),overflow,wide:overflow?[...document.querySelectorAll("#app *")].filter(node=>{const rect=node.getBoundingClientRect();return rect.width && rect.right>innerWidth+1}).slice(0,12).map(node=>({tag:node.tagName,id:node.id,classes:node.className,right:node.getBoundingClientRect().right})):[]};})()');
+      assert.equal(layout.overflow, false, `Calendar overflow at ${width}: ${JSON.stringify(layout)}`);
       assert.equal(await evaluate('getComputedStyle(document.querySelector("#shared-list")).display'), 'none');
     }
   });
@@ -445,6 +447,50 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     assert.equal(await evaluate('document.querySelector("[data-list-add=groceries] [name=name]").value'), 'Keep this draft');
     await click('[data-nav="lists"]');
     assert.equal(await evaluate('document.querySelector("[data-list-add=groceries] [name=name]").value'), 'Keep this draft');
+  });
+
+  await t.test('device palette picker applies all themes, preserves dark mode, and restores household default', async () => {
+    await click('[data-nav="calendar"]');
+    await click('#appearance-menu-button');
+    assert.equal(await evaluate('document.body.dataset.view'), 'calendar', 'Opening the palette must not navigate away from Calendar');
+    assert.equal(await evaluate('document.querySelector("#appearance-dialog").open'), true);
+    assert.equal(await evaluate('document.querySelector("#theme-household-default").getAttribute("aria-pressed")'), 'true');
+    const cardDesign = await evaluate('(()=>{const card=document.querySelector("[data-device-theme=green]"),circles=[...card.querySelectorAll(".palette-preview i")].map(node=>node.getBoundingClientRect()),layers=[...card.querySelectorAll(".palette-preview i")].map(node=>Number(getComputedStyle(node).zIndex)),style=getComputedStyle(card);return {background:style.backgroundColor,radius:style.borderRadius,overlapOne:circles[0].right>circles[1].left,overlapTwo:circles[1].right>circles[2].left,layers}})()');
+    assert.equal(cardDesign.background, 'rgb(234, 241, 236)'); assert.equal(cardDesign.radius, '13px');
+    assert.equal(cardDesign.overlapOne, true); assert.equal(cardDesign.overlapTwo, true);
+    assert.deepEqual(cardDesign.layers, [0, 1, 2]);
+    const lightAccents = {};
+    const themes = ['green', 'slate', 'blue', 'warm', 'teal', 'purple', 'rose', 'ocean', 'forest', 'midnight', 'sunset', 'monochrome', 'lavender', 'coral', 'berry', 'sand'];
+    assert.equal(await evaluate('document.querySelectorAll("[data-device-theme]").length'), 16);
+    for (const theme of themes) {
+      await click(`[data-device-theme="${theme}"]`);
+      const values = await evaluate(`(()=>{const root=getComputedStyle(document.documentElement),button=getComputedStyle(document.querySelector("#theme-toggle"));return {theme:document.body.dataset.theme,accent:root.getPropertyValue("--accent").trim(),muted:root.getPropertyValue("--muted").trim(),focus:getComputedStyle(document.querySelector("#today")).outlineColor,header:getComputedStyle(document.querySelector("header")).backgroundColor,preview:getComputedStyle(document.querySelector(".palette-${theme}")).backgroundColor,device:localStorage.getItem("family-hub-device-theme")}})()`);
+      assert.equal(values.theme, theme); assert.equal(values.device, theme);
+      assert.ok(values.accent && values.muted && values.focus && values.header && values.preview);
+      lightAccents[theme] = values.accent;
+    }
+    assert.equal(new Set(Object.values(lightAccents)).size, 16);
+    for (const width of [390, 760, 1024, 1440, 1920]) {
+      await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+      assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false, `Appearance overflow at ${width}px`);
+      assert.equal(await evaluate('getComputedStyle(document.querySelector("[data-device-theme=blue]")).display !== "none"'), true);
+    }
+    await click('#theme-toggle');
+    assert.equal(await evaluate('document.body.classList.contains("display-dim")'), true);
+    for (const theme of themes) {
+      await click(`[data-device-theme="${theme}"]`);
+      const dark = await evaluate('({theme:document.body.dataset.theme,accent:getComputedStyle(document.documentElement).getPropertyValue("--accent").trim(),muted:getComputedStyle(document.querySelector(".muted")).color,header:getComputedStyle(document.querySelector("header")).backgroundColor,primary:getComputedStyle(document.querySelector(".primary")).backgroundColor,focus:getComputedStyle(document.querySelector("#today")).outlineColor,backdrop:getComputedStyle(document.querySelector("dialog")).boxShadow})');
+      assert.equal(dark.theme, theme); assert.ok(dark.accent && dark.muted && dark.header && dark.primary && dark.focus && dark.backdrop);
+    }
+    await click('#theme-household-default');
+    assert.equal(await evaluate('document.body.dataset.theme'), 'green');
+    assert.equal(await evaluate('localStorage.getItem("family-hub-device-theme")'), null);
+    assert.equal(await evaluate('document.body.classList.contains("display-dim")'), true);
+    await click('#appearance-close');
+    assert.equal(await evaluate('document.querySelector("#appearance-dialog").open'), false);
+    await click('#theme-toggle');
+    assert.equal(await evaluate('document.body.classList.contains("display-dim")'), false);
+    assert.deepEqual(exceptions, []);
   });
   assert.deepEqual(exceptions, []);
 });
