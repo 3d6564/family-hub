@@ -16,8 +16,8 @@ body[data-view="calendar"] aside .lists-view{display:none}
 .list-row button{flex:none}
 #list-status{overflow-wrap:anywhere}
 @media(min-width:761px){
-  #app{padding-left:104px}
-  #app>nav{top:0;right:auto;bottom:0;left:0;width:104px;height:100vh;display:flex;flex-direction:column;justify-content:flex-start;align-items:stretch;gap:6px;padding:12px 6px;border-top:0;border-right:1px solid var(--line);overflow-y:auto}
+  #app{padding-left:88px}
+  #app>nav{top:0;right:auto;bottom:0;left:0;width:88px;height:100vh;display:flex;flex-direction:column;justify-content:flex-start;align-items:stretch;gap:6px;padding:12px 6px;border-top:0;border-right:1px solid var(--line);overflow-y:auto}
   #app>nav button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;flex:none;min-width:0;min-height:68px;padding:8px 4px;font-size:.9rem}
   #app>nav button b{display:block;margin:0;font-size:1.4rem}
   #app>nav button[data-tooltip]::after{display:none}
@@ -205,3 +205,26 @@ body.display-dim nav button[data-tooltip]::after,body.display-dim button.tooltip
 @media(max-width:760px){header time{font-size:.95rem}header #home-name{max-width:24vw}}
 @media(max-width:760px){nav button{display:grid}}
 @media(max-width:760px){.header-actions .icon-button{width:38px;min-width:38px;height:38px;padding:0}}
+
+/* Selected lists share space on wide screens and remain usable as tab panels. */
+body[data-view="lists"] #app .layout{max-width:1500px;width:100%}
+.list-panels[data-mode="columns"]{display:grid;grid-template-columns:repeat(var(--list-columns),minmax(0,1fr));gap:12px;align-items:start}
+.shared-list-panel{min-width:0;padding:12px;border:1px solid var(--line);border-radius:10px}
+.shared-list-panel>h3{margin:0;overflow-wrap:anywhere;font-size:1.15rem}
+.shared-list-panel h4{margin:14px 0 6px}
+.list-tabs{display:flex;flex-wrap:wrap;gap:4px;margin:12px 0;border-bottom:1px solid var(--line)}
+.list-tabs button{position:relative;flex:0 0 auto;min-width:0;max-width:100%;min-height:40px;padding:8px 12px;border:0;border-radius:0;background:transparent;color:var(--muted);font-size:.9rem;font-weight:600;overflow-wrap:anywhere}
+.list-tabs button:hover{color:var(--ink)}
+.list-tabs button::after{position:absolute;right:0;bottom:-1px;left:0;height:2px;background:transparent;content:""}
+.list-tabs button.active{color:var(--accent)}
+.list-tabs button.active::after{background:var(--accent)}
+@media(max-width:760px){.list-tabs button{min-height:44px;padding:10px 12px}}
+#anylist-list-choices{display:grid;gap:8px;max-height:360px;overflow-y:auto}
+#anylist-list-choices label{overflow-wrap:anywhere}
+.kiosk-keyboard{position:fixed;left:88px;right:0;bottom:0;z-index:100;display:grid;gap:6px;padding:8px 12px;background:var(--paper);border-top:2px solid var(--line);box-shadow:0 -5px 24px #0003;max-height:50vh;overflow-y:auto;touch-action:manipulation}
+.keyboard-title{font-size:.85rem;color:var(--muted)}
+.keyboard-row{display:flex;gap:6px;max-width:1100px;width:100%;margin:auto}
+.keyboard-row button{flex:1;min-width:0;min-height:44px;padding:4px 1px;font-size:1.1rem}
+.keyboard-row .keyboard-space{flex:3}
+body.keyboard-open #app{padding-bottom:var(--keyboard-height,280px)}
+@media(max-width:760px){.kiosk-keyboard{left:0;bottom:64px;padding:6px;gap:4px}.keyboard-row{gap:3px}}

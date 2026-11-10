@@ -250,8 +250,77 @@ test('AnyList API permits paired-display add/check but restricts connection and 
   assert.equal((await request('/api/lists/anylist/items/milk', 'DELETE', null, 'child')).status, 403);
   assert.equal((await request('/api/lists/anylist/items/milk', 'DELETE')).status, 200);
   assert.equal((await request('/api/lists/anylist/items/milk', 'GET', null, 'none')).status, 401);
+  assert.equal((await request('/api/integrations/anylist', 'PUT', { enabled: true, listIds: ['groceries', 'other'] })).status, 200);
+  const shared = await (await request('/api/lists/anylist', 'GET', null, 'device')).json();
+  assert.deepEqual(shared.lists.map(list => list.id), ['groceries', 'other']);
+  assert.equal((await request('/api/lists/anylist/other/items', 'POST', { name: 'Rice', listId: 'groceries' }, 'device')).status, 200);
+  assert.equal(state.lists[1].items.at(-1).name, 'Rice');
+  assert.equal(state.lists[0].items.some(item => item.name === 'Rice'), false);
+  assert.equal((await request('/api/lists/anylist/not-selected/items', 'POST', { name: 'Rice' }, 'device')).status, 404);
+  assert.equal((await request('/api/lists/anylist/other/items/other-item', 'PATCH', { checked: true }, 'device', { origin: 'https://outside.example.test' })).status, 403);
+  assert.equal((await request('/api/lists/anylist/other/items/other-item', 'PATCH', { checked: true }, 'device')).status, 200);
+  assert.equal((await request('/api/lists/anylist/other/items/other-item', 'DELETE', null, 'device')).status, 403);
+  assert.equal((await request('/api/lists/anylist/other/items/other-item', 'DELETE', null, 'child')).status, 403);
+  assert.equal((await request('/api/lists/anylist/other/items/other-item', 'DELETE')).status, 200);
   assert.equal((await request('/api/integrations/anylist', 'DELETE', null, 'device')).status, 403);
   assert.equal((await request('/api/integrations/anylist', 'DELETE')).status, 204);
   db.prepare("DELETE FROM sessions WHERE household_id=? AND kind='device'").run(home);
   assert.equal((await request('/api/lists/anylist/items', 'POST', { name: 'Rice' }, 'device')).status, 401);
+});
+
+test('multiple selected lists isolate writes, retain caches, and reject unselected lists', async (t) => {
+  const db = openDatabase(':memory:'); t.after(() => db.close());
+  const home = Number(db.prepare("INSERT INTO households(name,timezone) VALUES ('Sample home','UTC')").run().lastInsertRowid);
+  const { state, factory } = fakeProvider();
+  state.lists[1].items = [{ id: 'milk', name: 'Other milk', checked: true }];
+  state.lists.push({ id: 'private', name: 'Not shared', items: [{ id: 'private-item', name: 'Not returned', checked: false }] });
+  const connector = createAnyListConnector(db, { key, clientFactory: factory });
+  await connector.connect(home, 'adult@example.test', 'sample-password');
+  await connector.configure(home, ['groceries', 'other'], true);
+  let result = await connector.read(home);
+  assert.deepEqual(result.lists.map(list => list.id), ['groceries', 'other']);
+  assert.equal(JSON.stringify(result).includes('Not shared'), false);
+  const calls = state.calls.length;
+  await assert.rejects(connector.mutate(home, 'add', { listId: 'private', name: 'Rice' }), /not shared/);
+  assert.equal(state.calls.length, calls);
+  await assert.rejects(connector.configure(home, ['groceries', 'groceries'], true), /Select available lists/);
+  await connector.mutate(home, 'check', { listId: 'other', id: 'milk', checked: false });
+  assert.equal(state.lists[0].items.find(item => item.id === 'milk').checked, false);
+  assert.equal(state.lists[1].items[0].checked, false);
+  await connector.mutate(home, 'add', { listId: 'other', name: 'Rice' });
+  assert.equal(state.lists[1].items.at(-1).name, 'Rice');
+  assert.equal(state.lists[0].items.some(item => item.name === 'Rice'), false);
+  const before = state.calls.length;
+  await connector.configure(home, ['other'], false);
+  assert.equal(state.calls.length, before);
+  assert.deepEqual(connector.settings(home).listIds, ['other']);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM anylist_selected_lists WHERE household_id=?').get(home).n, 1);
+  await connector.configure(home, ['other', 'groceries'], true);
+  state.lists = state.lists.filter(list => list.id !== 'other');
+  const restarted = createAnyListConnector(db, { key, clientFactory: factory });
+  result = await restarted.read(home);
+  assert.equal(result.lists.find(list => list.id === 'other').stale, true);
+  assert.equal(result.lists.find(list => list.id === 'groceries').stale, false);
+  await restarted.mutate(home, 'add', { listId: 'groceries', name: 'Eggs' });
+  await assert.rejects(restarted.mutate(home, 'add', { listId: 'other', name: 'Eggs' }), /unavailable/);
+  await restarted.disconnect(home);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM anylist_selected_lists').get().n, 0);
+});
+
+test('multiple-list migration preserves a disabled 0.4.0 selection and its cached quantities', async () => {
+  const { default: Database } = await import('better-sqlite3');
+  const fs = await import('node:fs');
+  const db = new Database(':memory:');
+  try {
+    const directory = new URL('../migrations/', import.meta.url);
+    for (const file of fs.readdirSync(directory).filter(name => name.endsWith('.sql') && name < '027_').sort()) db.exec(fs.readFileSync(new URL(file, directory), 'utf8'));
+    db.prepare("INSERT INTO households(id,name,timezone) VALUES (1,'Migration sample','UTC')").run();
+    const items = JSON.stringify([{ id: 'rice', name: 'Rice', quantity: '2', quantityUnit: 'kg', checked: false }]);
+    db.prepare('INSERT INTO anylist_connections(household_id,credentials,enabled,list_id,list_name,items_json,last_success_at) VALUES (?,?,?,?,?,?,?)').run(1, 'synthetic-encrypted-record', 0, 'groceries', 'Groceries', items, '2026-11-10T12:00:00Z');
+    db.exec(fs.readFileSync(new URL('027_anylist_multiple_lists.sql', directory), 'utf8'));
+    const saved = db.prepare('SELECT * FROM anylist_selected_lists WHERE household_id=1').get();
+    assert.equal(saved.list_id, 'groceries'); assert.equal(saved.list_name, 'Groceries');
+    assert.equal(saved.items_json, items); assert.equal(saved.last_success_at, '2026-11-10T12:00:00Z');
+    assert.equal(db.prepare('SELECT enabled FROM anylist_connections WHERE household_id=1').get().enabled, 0);
+  } finally { db.close(); }
 });

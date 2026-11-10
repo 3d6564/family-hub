@@ -23,9 +23,16 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   let failScreenPair = false;
   const pairingRequests = [];
   let displayMode = false, failListSave = false;
-  let anylist = { keyReady: true, connected: false, enabled: false, listId: '', lists: [], state: 'unconfigured', lastSuccessAt: null };
+  let anylist = { keyReady: true, connected: false, enabled: false, listId: '', listIds: [], lists: [], state: 'unconfigured', lastSuccessAt: null };
   let listItems = [{ id: 'milk', name: 'Milk', notes: '', quantity: '2', quantityUnit: 'L', checked: false }, { id: 'bread', name: 'Bread', notes: '', quantity: '', checked: true }];
-  const listSnapshot = () => ({ enabled: anylist.enabled, name: anylist.enabled ? 'Sample groceries' : '', items: anylist.enabled ? listItems : [], lastSuccessAt: '2026-10-25T12:00:00Z', stale: false });
+  const resources = [{ id: 'groceries', name: 'Sample groceries' }, { id: 'household', name: 'Sample household' }, { id: 'pharmacy', name: 'Pharmacy' }, { id: 'tools', name: 'Tools' }];
+  const extraItems = new Map(resources.slice(1).map(list => [list.id, []]));
+  const itemsFor = id => id === 'groceries' ? listItems : extraItems.get(id);
+  let nextListItem = 10;
+  const listSnapshot = () => {
+    const lists = anylist.enabled ? anylist.listIds.map(id => ({ ...resources.find(list => list.id === id), items: itemsFor(id), lastSuccessAt: '2026-10-25T12:00:00Z', stale: false })) : [];
+    return { enabled: !!lists.length, lists, name: lists[0]?.name || '', items: lists[0]?.items || [], lastSuccessAt: lists[0]?.lastSuccessAt || null, stale: false };
+  };
   let weather = { enabled: false, location: 'Sample city', provider: 'open-meteo', units: 'f', days: 5, refreshMinutes: 30, hasKey: { openweathermap: true }, status: { state: 'disabled' } };
   let feeds = [{ id: 1, name: 'Sample calendar', color: '#4285f4', enabled: 1, status: { state: 'not_checked' } }];
   let sampleMembers = [{ id: 1, name: 'Sample adult', role: 'adult', has_email: 1 }, { id: 2, name: 'Sample child', role: 'child', has_email: 0 }];
@@ -44,20 +51,21 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     if (route === '/api/calendar/events') return json({ events: [], errors: [] });
     if (route === '/api/tokens') return json({ people: [] });
     if (route === '/api/members') return json(sampleMembers);
-    if (route === '/api/integrations/anylist/connect') { anylist = { ...anylist, connected: true, lists: [{ id: 'groceries', name: 'Sample groceries' }, { id: 'household', name: 'Sample household' }], state: 'disabled' }; return json(anylist); }
+    if (route === '/api/integrations/anylist/connect') { anylist = { ...anylist, connected: true, lists: resources, state: 'disabled' }; return json(anylist); }
     if (route === '/api/integrations/anylist') {
       if (req.method === 'PUT') anylist = { ...anylist, ...body, state: body.enabled ? 'ok' : 'disabled' };
       return json(anylist);
     }
     if (route === '/api/lists/anylist') return json(listSnapshot());
-    if (route === '/api/lists/anylist/items') {
+    const listRoute = route.match(/^\/api\/lists\/anylist\/([^/]+)\/items(?:\/(.+))?$/);
+    if (listRoute) {
+      const listId = decodeURIComponent(listRoute[1]), id = listRoute[2] && decodeURIComponent(listRoute[2]);
       if (failListSave) return json({ error: 'Sample list save failure. Refresh before trying again.' }, 502);
-      listItems.push({ id: `item-${listItems.length}`, name: body.name, notes: '', quantity: '', checked: false }); return json(listSnapshot());
-    }
-    if (route.startsWith('/api/lists/anylist/items/')) {
-      const id = decodeURIComponent(route.split('/').at(-1));
-      if (req.method === 'DELETE') listItems = listItems.filter(item => item.id !== id);
-      else listItems = listItems.map(item => item.id === id ? { ...item, checked: body.checked } : item);
+      let items = itemsFor(listId);
+      if (req.method === 'POST') items.push({ id: `item-${nextListItem++}`, name: body.name, notes: '', quantity: '', checked: false });
+      if (req.method === 'DELETE') items = items.filter(item => item.id !== id);
+      if (req.method === 'PATCH') items = items.map(item => item.id === id ? { ...item, checked: body.checked } : item);
+      if (listId === 'groceries') listItems = items; else extraItems.set(listId, items);
       return json(listSnapshot());
     }
     if (route === '/api/members/2' && req.method === 'PATCH') { sampleMembers = sampleMembers.map(member => member.id === 2 ? { ...member, ...body } : member); return json({ ok: true }); }
@@ -98,13 +106,14 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   const socket = new WebSocket(target.webSocketDebuggerUrl);
   await once(socket, 'open');
   t.after(() => socket.close());
-  let nextId = 0, acceptDialog = false;
+  let nextId = 0, acceptDialog = false, virtualBudgetDone;
   const pending = new Map(), dialogs = [], exceptions = [];
   const send = (method, params = {}) => new Promise((resolve, reject) => { const id = ++nextId; pending.set(id, { resolve, reject }); socket.send(JSON.stringify({ id, method, params })); });
   socket.addEventListener('message', event => {
     const message = JSON.parse(event.data);
     if (message.id) { const request = pending.get(message.id); pending.delete(message.id); if (message.error) request.reject(new Error(message.error.message)); else request.resolve(message.result); }
     if (message.method === 'Page.javascriptDialogOpening') { dialogs.push(message.params.message); send('Page.handleJavaScriptDialog', { accept: acceptDialog }).catch(() => {}); }
+    if (message.method === 'Emulation.virtualTimeBudgetExpired') { virtualBudgetDone?.(); virtualBudgetDone = undefined; }
     if (message.method === 'Runtime.exceptionThrown') exceptions.push(message.params.exceptionDetails.text);
   });
   await send('Page.enable'); await send('Runtime.enable');
@@ -112,6 +121,11 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     const result = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
     return result.result.value;
+  };
+  const advanceTime = async budget => {
+    const expired = new Promise(resolve => { virtualBudgetDone = resolve; });
+    await send('Emulation.setVirtualTimePolicy', { policy: 'advance', budget });
+    await expired;
   };
   const click = selector => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
   const fill = (selector, value) => evaluate(`(()=>{const input=document.querySelector(${JSON.stringify(selector)});input.value=${JSON.stringify(value)};input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
@@ -284,14 +298,15 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     await click('#anylist-connect-form button');
     await until(() => evaluate('document.querySelector("#anylist-connect-form .form-status").textContent === "Saved."'));
     assert.equal(await evaluate('document.querySelector("#anylist-connect-form [name=password]").value'), '');
-    await fill('#anylist-config-form [name=listId]', 'household');
+    await click('#anylist-config-form [name=listIds][value=household]');
     await click('#anylist-config-form button');
     await until(() => evaluate('document.querySelector("#anylist-config-form .form-status").textContent === "Saved."'));
-    assert.equal(anylist.listId, 'household');
+    assert.deepEqual(anylist.listIds, ['household']);
     assert.equal(anylist.enabled, false);
     await click('#menu-button');
-    await until(() => evaluate('document.querySelector("#anylist-config-form [name=listId]").value === "household"'));
-    await fill('#anylist-config-form [name=listId]', 'groceries');
+    await until(() => evaluate('document.querySelector("#anylist-config-form [name=listIds][value=household]").checked'));
+    await click('#anylist-config-form [name=listIds][value=household]');
+    await click('#anylist-config-form [name=listIds][value=groceries]');
     await click('#anylist-config-form [name=enabled]');
     assert.equal(anylist.enabled, false);
     await click('#anylist-config-form button');
@@ -307,9 +322,11 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
       await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
       const bounds = await evaluate('(()=>{const nav=document.querySelector("#app>nav").getBoundingClientRect(),list=document.querySelector("#shared-list").getBoundingClientRect();return {overflow:document.documentElement.scrollWidth>innerWidth,navLeft:nav.left,navTop:nav.top,navWidth:nav.width,listLeft:list.left,listWidth:list.width,visible:getComputedStyle(document.querySelector("#shared-list")).display!=="none"};})()');
       assert.equal(bounds.overflow, false, `Lists overflow at ${width}`); assert.equal(bounds.visible, true);
-      if (width > 760) { assert.equal(bounds.navLeft, 0); assert.equal(bounds.navTop, 0); assert.equal(bounds.navWidth, 104); assert.ok(bounds.listLeft >= 104); }
+      if (width > 760) { assert.equal(bounds.navLeft, 0); assert.equal(bounds.navTop, 0); assert.equal(bounds.navWidth, 88); assert.ok(bounds.listLeft >= 88); }
       else { assert.ok(bounds.navTop >= 930); assert.ok(bounds.listWidth <= width); }
     }
+    await evaluate('document.querySelector("#list-add-form [name=name]").focus()');
+    assert.equal(await evaluate('document.querySelector("#kiosk-keyboard").hidden'), true);
     await fill('#list-add-form [name=name]', 'Eggs <img src=x>');
     failListSave = true; await click('#list-add-form button');
     await until(() => evaluate('document.querySelector("#list-status").textContent.includes("Sample list save failure")'));
@@ -348,6 +365,86 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     await fill('#list-add-form [name=name]', 'Apples'); await click('#list-add-form button');
     await until(() => listItems.some(item => item.name === 'Apples'));
     assert.equal(await evaluate('document.querySelectorAll("#list-items button").length'), 0);
+  });
+  await t.test('paired-display keyboard supports typing, shift, symbols, deletion and other text fields', async () => {
+    await evaluate('document.querySelector("#list-add-form [name=name]").focus()');
+    await until(() => evaluate('!document.querySelector("#kiosk-keyboard").hidden'));
+    await fill('#list-add-form [name=name]', '');
+    await click('[data-kiosk-key="Shift"]'); await click('[data-kiosk-key="a"]');
+    await click('[data-kiosk-key="Symbols"]'); await click('[data-kiosk-key="1"]');
+    await click('[data-kiosk-key="Backspace"]'); await click('[data-kiosk-key="2"]');
+    assert.equal(await evaluate('document.querySelector("#list-add-form [name=name]").value'), 'A2');
+    assert.equal(await evaluate('document.activeElement.name'), 'name');
+    await click('[data-kiosk-key="Done"]');
+    assert.equal(await evaluate('document.querySelector("#kiosk-keyboard").hidden'), true);
+    await evaluate('(()=>{const input=document.createElement("input");input.id="kiosk-sample";input.setAttribute("aria-label","Sample text field");document.querySelector("#app").append(input);input.focus()})()');
+    await until(() => evaluate('!document.querySelector("#kiosk-keyboard").hidden'));
+    await click('[data-kiosk-key="b"]');
+    assert.equal(await evaluate('document.querySelector("#kiosk-sample").value'), 'b');
+    await evaluate('(()=>{const input=document.createElement("input");input.type="password";input.id="kiosk-password-sample";document.querySelector("#app").append(input);input.focus()})()');
+    assert.equal(await evaluate('document.querySelector("#kiosk-keyboard").hidden'), true);
+    await evaluate('document.querySelector("#kiosk-sample").remove();document.querySelector("#kiosk-password-sample").remove()');
+    for (const width of [390, 760, 1024, 1920]) {
+      await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+      await evaluate('document.querySelector("#list-add-form [name=name]").focus()');
+      await until(() => evaluate('!document.querySelector("#kiosk-keyboard").hidden'));
+      assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false, `Keyboard overflow at ${width}`);
+      await click('[data-kiosk-key="Done"]');
+    }
+  });
+
+  await t.test('multiple lists use columns or tabs and keep drafts and targeted writes separate', async () => {
+    anylist.listIds = ['groceries', 'household', 'pharmacy'];
+    await click('#list-refresh');
+    await until(() => evaluate('document.querySelectorAll(".shared-list-panel").length === 3'));
+    await send('Emulation.setDeviceMetricsOverride', { width: 1920, height: 1000, deviceScaleFactor: 1, mobile: false });
+    assert.equal(await evaluate('document.querySelector("#list-tabs").hidden'), true);
+    assert.equal(await evaluate('document.querySelector("#list-panels").dataset.mode'), 'columns');
+    assert.equal(await evaluate('[...document.querySelectorAll(".shared-list-panel")].filter(panel=>!panel.hidden).length'), 3);
+    await fill('[data-list-add="groceries"] [name=name]', 'Unfinished groceries');
+    await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await until(() => evaluate('document.querySelector("#list-panels").dataset.mode === "tabs"'));
+    assert.equal(await evaluate('document.querySelector("#list-tabs").hidden'), false);
+    await click('[data-list-tab="household"]');
+    await fill('[data-list-add="household"] [name=name]', 'Unfinished household');
+    await click('#list-refresh');
+    await until(() => evaluate('!document.querySelector("#shared-list").hasAttribute("aria-busy")'));
+    assert.equal(await evaluate('document.querySelector("[data-list-add=household] [name=name]").value'), 'Unfinished household');
+    await click('[data-list-tab="groceries"]');
+    assert.equal(await evaluate('document.querySelector("[data-list-add=groceries] [name=name]").value'), 'Unfinished groceries');
+    anylist.listIds.push('tools'); await click('#list-refresh');
+    await until(() => evaluate('document.querySelectorAll(".shared-list-panel").length === 4'));
+    await send('Emulation.setDeviceMetricsOverride', { width: 1920, height: 1000, deviceScaleFactor: 1, mobile: false });
+    assert.equal(await evaluate('document.querySelector("#list-tabs").hidden'), false);
+    assert.equal(await evaluate('[...document.querySelectorAll(".shared-list-panel")].filter(panel=>!panel.hidden).length'), 1);
+    await click('[data-list-tab="household"]');
+    await fill('[data-list-add="household"] [name=name]', 'Batteries');
+    await click('[data-list-add="household"] button');
+    await until(() => extraItems.get('household').some(item => item.name === 'Batteries'));
+    assert.equal(listItems.some(item => item.name === 'Batteries'), false);
+    await until(() => evaluate('!document.querySelector("#shared-list").hasAttribute("aria-busy")'));
+    for (const width of [390, 760, 1024, 1440, 1920]) {
+      await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+      assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false, `Multiple list overflow at ${width}`);
+    }
+    await click('[data-kiosk-key="Done"]');
+  });
+
+  await t.test('paired Lists returns to Calendar after idle time, respects movement, and preserves drafts', async () => {
+    await click('[data-list-tab="groceries"]');
+    await fill('[data-list-add="groceries"] [name=name]', 'Keep this draft');
+    await evaluate('document.querySelector("[data-list-add=groceries] [name=name]").focus()');
+    await advanceTime(59000);
+    await evaluate('document.dispatchEvent(new PointerEvent("pointermove",{bubbles:true}))');
+    assert.equal(await evaluate('document.body.dataset.view'), 'lists');
+    await advanceTime(59000);
+    assert.equal(await evaluate('document.body.dataset.view'), 'lists');
+    await advanceTime(2000);
+    await until(() => evaluate('document.body.dataset.view === "calendar"'));
+    assert.equal(await evaluate('document.querySelector("#kiosk-keyboard").hidden'), true);
+    assert.equal(await evaluate('document.querySelector("[data-list-add=groceries] [name=name]").value'), 'Keep this draft');
+    await click('[data-nav="lists"]');
+    assert.equal(await evaluate('document.querySelector("[data-list-add=groceries] [name=name]").value'), 'Keep this draft');
   });
   assert.deepEqual(exceptions, []);
 });

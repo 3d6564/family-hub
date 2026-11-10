@@ -32,7 +32,7 @@ revoke provider-side tokens.
 
 1. Sign in as an adult. Open **Settings → Integrations → AnyList**.
 2. Enter the AnyList account email and password, then select **Connect / reconnect**.
-3. Choose one shared list, select **Enable shared list**, and save.
+3. Choose shared lists, select **Enable shared lists**, and save.
 4. Open **Lists** from the main navigation.
 
 AnyList is the source of truth. Adults and paired displays can add items and
@@ -48,6 +48,13 @@ not expose list creation, recipes, meal planning, item renaming, or notes editin
 
 Displayed quantities keep their units, such as **2 kg Rice**.
 
+Up to three selected lists appear together at wide desktop sizes. Phones,
+narrower screens, and selections of more than three lists use tabs. Each list
+has its own add form and unfinished draft. Paired displays show an on-screen
+keyboard for text fields, excluding passwords. They return from Lists to
+Calendar after 60 seconds without typing, pointer, touch, or scrolling activity.
+The return waits for active saves and keeps drafts until the page is reloaded.
+
 The Lists view checks for updates about once a minute while open. The server
 shares a one-minute refresh window across readers. **Refresh** can check sooner,
 but not more than once every five seconds. Writes fetch current provider data
@@ -55,15 +62,15 @@ first and are serialized within this Family Hub process. They are not queued for
 offline delivery. Provider failures keep the last selected-list cache visible
 with a warning, without blocking calendars, weather, routines, or chores.
 
-**Disable** hides the shared list and stops automatic fetching, while retaining
-settings and tokens. You can save a different selected list while disabled without
-contacting AnyList; changing the selection clears the previous list's cached items
-and fetch time.
+**Disable** hides shared lists and stops automatic fetching, while retaining
+settings and tokens. You can change selected lists while disabled without
+contacting AnyList. Removed lists lose their cached items and fetch times;
+retained lists keep theirs.
 
 **Refresh available lists** is an explicit adult request
 that can still contact AnyList while disabled. **Reconnect** replaces the saved
-account and clears the selected list after sign-in succeeds; select and enable a
-list again. **Disconnect AnyList** removes saved connection data and stops sync.
+account and clears selected lists after sign-in succeeds; select and enable
+lists again. **Disconnect AnyList** removes saved connection data and stops sync.
 
 ## Limits and maintenance
 
@@ -73,7 +80,7 @@ list again. **Disconnect AnyList** removes saved connection data and stops sync.
 - The observed `/data/user-data/get` response can contain other lists, recipes,
   and meal plans. The server receives that response in memory. Its fixed local
   schema decodes only shopping-list fields. Only list IDs/names are retained for
-  adult selection; only the selected list's items are cached or sent to displays.
+  adult selection; only selected lists' items are cached or sent to displays.
 - Requests use a fixed HTTPS origin, reject redirects, time out after 15 seconds,
   and accept at most 8 MiB per response. Larger accounts can exceed this limit.
 - Protocol field numbers and operations were checked against
@@ -88,4 +95,4 @@ list again. **Disconnect AnyList** removes saved connection data and stops sync.
   concurrent change from another device can race with deletion. Do not treat
   this as an atomic cross-device guarantee.
 - Connection attempts and safe error state are held in memory and reset on
-  restart. The selected list and last successful fetch time survive restarts.
+  restart. Selected lists and their last successful fetch times survive restarts.

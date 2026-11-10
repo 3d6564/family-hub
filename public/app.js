@@ -2,6 +2,7 @@ import { calendarGridWindow, eventSpanDays } from './calendar-view.js';
 import { routinePeriodGroups } from './routine-view.js';
 import { createSettingsForms } from './settings-forms.js';
 import { createListsView } from './lists-view.js';
+import { createKioskInput } from './kiosk-input.js';
 const $=(s,p=document)=>p.querySelector(s), $$=(s,p=document)=>[...p.querySelectorAll(s)];
 let me, dashboard, members=[], routineCatalog=[], choreCatalog=[], feedCatalog=[], calendarEvents=[], weatherKeys={}, deploymentVersion, cursor=new Date(), openEvent, pinnedMonth=false, shownDay=new Date().toLocaleDateString('en-CA'), shownRoutinePeriod, setupMode=false;
 let weatherHasKeys = {};
@@ -11,14 +12,20 @@ const settingsForms = createSettingsForms({
 });
 const settingsRoot = () => $('.settings');
 const listsView = createListsView({ api, settingsForms, getMe: () => me });
+const kioskInput = createKioskInput({
+  enabled: () => !!me?.device && !me.user && !$('#app').hidden,
+  active: () => document.body.dataset.view === 'lists',
+  busy: listsView.isBusy,
+  onIdle: () => openView('calendar'),
+});
 const editableSettings = form => !settingsForms.dirty(form) && !settingsForms.busy(form);
 window.addEventListener('beforeunload', event => { if (settingsForms.pending(settingsRoot()).length || settingsRoot().querySelector('[aria-busy="true"]')) { event.preventDefault(); event.returnValue = ''; } });
 cursor=new Date(cursor.getFullYear(),cursor.getMonth(),1);
 function toast(message){const el=$('#toast');el.textContent=message;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2500)}
 async function api(url,options={}){const response=await fetch(url,{...options,headers:{'Content-Type':'application/json','X-CSRF-Token':'1',...options.headers}});if(response.status===401){if(!setupMode)showAuth();throw new Error('Sign in is required.')}if(!response.ok){const body=await response.json().catch(()=>({}));throw new Error(body.error||'The request failed.')}return response.status===204?null:response.json()}
 function formJson(form){return Object.fromEntries(new FormData(form))}
-function showAuth(fromDevice=false){$('#app').hidden=true;$('#auth').hidden=false;$('#setup-panel').hidden=true;$('#auth-tabs').hidden=true;$('#auth h1').textContent='Welcome home';$('#auth-intro').textContent='Sign in on a phone, or add this screen from Settings, then Screens.';$('#auth-cancel').hidden=!fromDevice;$('#login-form').hidden=false;startDisplayPairing()}
-function showSetup(){setupMode=true;stopDisplayPairing();$('#app').hidden=true;$('#auth').hidden=false;$('#setup-panel').hidden=false;$('#auth-tabs').hidden=true;$('#login-form').hidden=true;$('#display-pair').hidden=true;$('#auth-cancel').hidden=true;$('#auth h1').textContent='Set up Family Hub';$('#auth-intro').textContent='This Family Hub is empty. Restore a backup or start a new household.'}
+function showAuth(fromDevice=false){$('#app').hidden=true;kioskInput.viewChanged();$('#auth').hidden=false;$('#setup-panel').hidden=true;$('#auth-tabs').hidden=true;$('#auth h1').textContent='Welcome home';$('#auth-intro').textContent='Sign in on a phone, or add this screen from Settings, then Screens.';$('#auth-cancel').hidden=!fromDevice;$('#login-form').hidden=false;startDisplayPairing()}
+function showSetup(){setupMode=true;stopDisplayPairing();$('#app').hidden=true;kioskInput.viewChanged();$('#auth').hidden=false;$('#setup-panel').hidden=false;$('#auth-tabs').hidden=true;$('#login-form').hidden=true;$('#display-pair').hidden=true;$('#auth-cancel').hidden=true;$('#auth h1').textContent='Set up Family Hub';$('#auth-intro').textContent='This Family Hub is empty. Restore a backup or start a new household.'}
 let displayPairTimer=0;
 function stopDisplayPairing(){clearTimeout(displayPairTimer);displayPairTimer=0}
 function readStoredPair(){try{return JSON.parse(sessionStorage.getItem('family-hub-display-pair')||'null')}catch{return null}}
@@ -291,7 +298,7 @@ function openView(name) {
   $$('[data-nav]').forEach(button => { const active = button.dataset.nav === name; button.classList.toggle('active', active); if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); });
   if (name === 'settings' && me.user?.role === 'adult') { setupDisplayTitleSetting(); setupRoutineScheduleSetting(); setupSettingsTabs(); addRoutineSettingsTab(); setupTokenBoardSetting(); setupScreensSettings(); listsView.settings(); settingsForms.watch(settingsRoot()); }
   if (name === 'lists') listsView.refresh();
-  if (name === 'tokens') renderTokens(); if (name === 'calendar') renderTokenBoard(); if (dashboard) renderWeather(); location.hash = name;
+  if (name === 'tokens') renderTokens(); if (name === 'calendar') renderTokenBoard(); if (dashboard) renderWeather(); location.hash = name; kioskInput.viewChanged();
 }
 document.addEventListener('click',async e=>{const button=e.target.closest('[data-feed-move]');if(!button)return;const index=feedCatalog.findIndex(feed=>feed.id===+button.dataset.feedMove),swap=index+(button.dataset.direction==='up'?-1:1);if(index<0||swap<0||swap>=feedCatalog.length)return;const ids=feedCatalog.map(feed=>feed.id);[ids[index],ids[swap]]=[ids[swap],ids[index]];await settingsAction(button,async()=>{await api('/api/calendar/feed-order',{method:'PUT',body:JSON.stringify({ids})});await Promise.all([loadSettings(['feeds']),renderCalendar()])})});
 let stream;async function refreshCalendar(){me=await api('/api/me');await renderCalendar()}function connectEvents(){stream?.close();stream=new EventSource('/api/events/stream');for(const name of ['tasks','dashboard'])stream.addEventListener(name,refresh);stream.addEventListener('calendar',refreshCalendar);stream.addEventListener('lists',()=>{if(document.body.dataset.view==='lists')listsView.refresh()})}
