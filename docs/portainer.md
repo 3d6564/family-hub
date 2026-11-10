@@ -38,6 +38,18 @@ reference.
 If using `stable`, tell Portainer to pull the latest image and record the
 installed version before redeployment.
 
+## Optional AnyList connection (0.4.0 and later)
+
+Save a separate random 32-byte `FAMILY_HUB_INTEGRATION_KEY` as 64 hexadecimal
+characters in the stack environment. Add the matching service environment entry
+from the updated `compose.yaml`; a stack value alone is not passed into the
+container. Keep all existing environment values, port bindings, and data volumes.
+Retain the key securely outside database backups for connection recovery.
+
+After redeployment, an adult connects through **Settings → Integrations**.
+AnyList uses an unofficial protocol and remains experimental. See
+[AnyList setup and limits](anylist.md).
+
 ## Roll back
 
 Follow the release's rollback classification. For direct rollback, select the
