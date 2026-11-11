@@ -91,6 +91,7 @@ nav [data-nav="plans"],[data-view="plans"]{display:none!important}
 .item-edit-move button,.item-edit-actions button{width:auto;min-width:36px;min-height:36px;padding:4px 8px;white-space:nowrap}
 .check-row label{flex-wrap:nowrap;align-items:flex-start}
 .check-row input{margin-top:2px}
+html.display-dim[data-theme],body.display-dim[data-theme]{--ink:#e8eaed;--muted:#b3bbc5;--bg:#14171b;--paper:#1e2228;--line:#46515d;--blue:#344b5b;--sand:#51402f;--mint:#2b3e35;--danger:#e08a82;--control:#2a2f36;--green:#d5dbe3;--accent:color-mix(in srgb,var(--palette-accent) 55%,white)}
 .day.today{background:color-mix(in srgb,var(--accent) 18%,var(--paper));box-shadow:inset 0 0 0 2px var(--accent)}
 html.display-dim .day.today,body.display-dim .day.today{background:color-mix(in srgb,var(--accent) 24%,var(--paper));box-shadow:inset 0 0 0 2px var(--accent)}
 .day{display:flex;flex-direction:column}

@@ -477,10 +477,20 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     }
     await click('#theme-toggle');
     assert.equal(await evaluate('document.body.classList.contains("display-dim")'), true);
+    const darkAccents = {};
     for (const theme of themes) {
       await click(`[data-device-theme="${theme}"]`);
-      const dark = await evaluate('({theme:document.body.dataset.theme,accent:getComputedStyle(document.documentElement).getPropertyValue("--accent").trim(),muted:getComputedStyle(document.querySelector(".muted")).color,header:getComputedStyle(document.querySelector("header")).backgroundColor,primary:getComputedStyle(document.querySelector(".primary")).backgroundColor,focus:getComputedStyle(document.querySelector("#today")).outlineColor,backdrop:getComputedStyle(document.querySelector("dialog")).boxShadow})');
+      const dark = await evaluate(`(()=>{const root=getComputedStyle(document.documentElement),holder=document.createElement("div");holder.innerHTML='<div class="day today">Today</div><button class="event">Event</button><button class="agenda-event">Agenda</button>';document.body.append(holder);const rgb=value=>value.match(/[\\d.]+/g).slice(0,3).map(Number),luminance=value=>{const c=rgb(value).map(n=>n/255).map(n=>n<=.04045?n/12.92:((n+.055)/1.055)**2.4);return .2126*c[0]+.7152*c[1]+.0722*c[2]},contrast=(a,b)=>{const x=luminance(a),y=luminance(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05)},event=getComputedStyle(holder.querySelector('.event')),agenda=getComputedStyle(holder.querySelector('.agenda-event')),today=getComputedStyle(holder.querySelector('.day.today')),result={theme:document.body.dataset.theme,accent:root.getPropertyValue('--accent').trim(),muted:getComputedStyle(document.querySelector('.muted')).color,header:getComputedStyle(document.querySelector('header')).backgroundColor,primary:getComputedStyle(document.querySelector('.primary')).backgroundColor,focus:getComputedStyle(document.querySelector('#today')).outlineColor,backdrop:getComputedStyle(document.querySelector('dialog')).boxShadow,eventContrast:contrast(event.color,event.backgroundColor),eventColor:event.color,eventBackground:event.backgroundColor,agendaContrast:contrast(agenda.color,agenda.backgroundColor),todayContrast:contrast(today.color,today.backgroundColor)};holder.remove();return result})()`);
       assert.equal(dark.theme, theme); assert.ok(dark.accent && dark.muted && dark.header && dark.primary && dark.focus && dark.backdrop);
+      assert.ok(dark.eventContrast >= 4.5, `${theme} event text contrast: ${dark.eventContrast} (${dark.eventColor} on ${dark.eventBackground})`);
+      assert.ok(dark.agendaContrast >= 4.5, `${theme} agenda text contrast: ${dark.agendaContrast}`);
+      assert.ok(dark.todayContrast >= 4.5, `${theme} today text contrast: ${dark.todayContrast}`);
+      darkAccents[theme] = dark.accent;
+    }
+    assert.equal(new Set(Object.values(darkAccents)).size, 16, 'dark accents retain each palette color');
+    for (const width of [390, 1440]) {
+      await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+      assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false, `dark calendar overflow at ${width}px`);
     }
     await click('#theme-household-default');
     assert.equal(await evaluate('document.body.dataset.theme'), 'green');
