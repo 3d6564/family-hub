@@ -371,6 +371,7 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   await t.test('paired-display keyboard supports typing, shift, symbols, deletion and other text fields', async () => {
     await evaluate('document.querySelector("#list-add-form [name=name]").focus()');
     await until(() => evaluate('!document.querySelector("#kiosk-keyboard").hidden'));
+    assert.ok(await evaluate('parseFloat(getComputedStyle(document.querySelector("[data-kiosk-key=a]")).minHeight) >= 54'), 'On-screen keys should have more vertical height');
     await fill('#list-add-form [name=name]', '');
     await click('[data-kiosk-key="Shift"]'); await click('[data-kiosk-key="a"]');
     await click('[data-kiosk-key="Symbols"]'); await click('[data-kiosk-key="1"]');

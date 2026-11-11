@@ -58,9 +58,11 @@ The return waits for active saves and keeps drafts until the page is reloaded.
 The Lists view checks for updates about once a minute while open. The server
 shares a one-minute refresh window across readers. **Refresh** can check sooner,
 but not more than once every five seconds. Writes fetch current provider data
-first and are serialized within this Family Hub process. They are not queued for
-offline delivery. Provider failures keep the last selected-list cache visible
-with a warning, without blocking calendars, weather, routines, or chores.
+first and are serialized within this Family Hub process. A successful add stays
+in the saved list until a later provider read confirms it; the list is marked
+stale while that confirmation is pending. Writes are not queued for offline
+delivery. Provider failures keep the last selected-list cache visible with a
+warning, without blocking calendars, weather, routines, or chores.
 
 **Disable** hides shared lists and stops automatic fetching, while retaining
 settings and tokens. You can change selected lists while disabled without

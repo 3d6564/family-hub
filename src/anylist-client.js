@@ -5,6 +5,17 @@ const origin = 'https://www.anylist.com';
 const maxBytes = 8 * 1024 * 1024;
 const safeString = (value, max) => typeof value === 'string' && value.length > 0 && value.length <= max;
 
+/** Encode protobuf operations as a binary multipart field without a file name. */
+function operationsForm(bytes) {
+  const boundary = `----familyHub${crypto.randomUUID().replaceAll('-', '')}`;
+  const body = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="operations"\r\nContent-Type: application/octet-stream\r\n\r\n`),
+    Buffer.from(bytes),
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+  return { body, contentType: `multipart/form-data; boundary=${boundary}` };
+}
+
 /** A provider failure whose message is safe for users and never includes provider output. */
 export class AnyListError extends Error {
   constructor(message = 'AnyList could not update. Check the connection and try again.', status = 502) {
@@ -25,11 +36,12 @@ export function createAnyListClient({ session, fetchImpl = fetch, saveSession = 
   async function request(endpoint, form, authenticated = true) {
     let response;
     try {
+      const headers = { 'X-AnyLeaf-API-Version': '3', ...(authenticated ? {
+        'X-AnyLeaf-Client-Identifier': session.clientId, authorization: `Bearer ${session.accessToken}`,
+      } : {}), ...(form?.contentType ? { 'content-type': form.contentType } : {}) };
       response = await fetchImpl(`${origin}${endpoint}`, {
         method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15000),
-        headers: { 'X-AnyLeaf-API-Version': '3', ...(authenticated ? {
-          'X-AnyLeaf-Client-Identifier': session.clientId, authorization: `Bearer ${session.accessToken}`,
-        } : {}) }, body: form,
+        headers, body: form?.body ?? form,
       });
       if (!response.ok) {
         await response.body?.cancel();
@@ -104,8 +116,7 @@ export function createAnyListClient({ session, fetchImpl = fetch, saveSession = 
       const operation = { metadata: { operationId: crypto.randomUUID().replaceAll('-', '').toUpperCase(), handlerId: handlers[action] }, listId, listItemId: item.id };
       if (action === 'check') operation.updatedValue = item.checked ? 'y' : 'n';
       if (action === 'add' || action === 'delete') operation.listItem = { identifier: item.id, listId, name: item.name, checked: !!item.checked, details: item.notes || '', ...(item.quantity || item.quantityUnit ? { quantityPb: { amount: item.quantity || '', unit: item.quantityUnit || '' } } : {}) };
-      const form = new FormData();
-      form.append('operations', new Blob([operationsType.encode({ operations: [operation] }).finish()]), 'operations');
+      const form = operationsForm(operationsType.encode({ operations: [operation] }).finish());
       await authorized('/data/shopping-lists/update', form);
     },
   };
