@@ -19,13 +19,14 @@ const sampleLists = () => [
 ];
 
 function fakeProvider() {
-  const state = { lists: sampleLists(), calls: [], fail: false, failWrite: false };
+  const state = { lists: sampleLists(), calls: [], fail: false, failWrite: false, ignoreWrites: false };
   const factory = ({ saveSession } = {}) => ({
     async login(email, password) { state.calls.push(['login', email]); assert.equal(password, 'sample-password'); saveSession?.(session); return session; },
     async lists() { state.calls.push(['lists']); if (state.fail) throw new Error('sample-secret-provider-error'); return structuredClone(state.lists); },
     async change(listId, action, item) {
       state.calls.push([action, listId, item.id]);
       if (state.failWrite) throw new Error('sample-secret-write-error');
+      if (state.ignoreWrites) return;
       const list = state.lists.find(entry => entry.id === listId);
       if (action === 'add') list.items.push(structuredClone(item));
       if (action === 'check') list.items = list.items.map(entry => entry.id === item.id ? structuredClone(item) : entry);
@@ -33,6 +34,18 @@ function fakeProvider() {
     },
   });
   return { state, factory };
+}
+
+function operationFromForm(options) {
+  const boundary = options.headers['content-type'].match(/boundary=(.+)$/)?.[1];
+  assert.ok(boundary);
+  const body = Buffer.from(options.body);
+  const prefix = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="operations"\r\nContent-Type: application/octet-stream\r\n\r\n`);
+  const suffix = Buffer.from(`\r\n--${boundary}--\r\n`);
+  assert.deepEqual(body.subarray(0, prefix.length), prefix);
+  assert.deepEqual(body.subarray(-suffix.length), suffix);
+  assert.equal(body.toString('latin1', 0, prefix.length).includes('filename='), false, 'operations is a form field, not a file upload');
+  return operationsType.decode(body.subarray(prefix.length, -suffix.length)).operations[0];
 }
 
 test('AnyList client decodes known wire bytes and sends ID-based checked operations', async () => {
@@ -43,7 +56,7 @@ test('AnyList client decodes known wire bytes and sends ID-based checked operati
     calls.push(url); assert.equal(options.redirect, 'error'); assert.equal(options.headers.authorization, `Bearer ${session.accessToken}`);
     assert.ok(options.signal instanceof AbortSignal);
     if (url.endsWith('/data/user-data/get')) return new Response(bytes);
-    const operation = operationsType.decode(new Uint8Array(await options.body.get('operations').arrayBuffer())).operations[0];
+    const operation = operationFromForm(options);
     assert.equal(operation.metadata.handlerId, 'set-list-item-checked');
     assert.equal(operation.listId, 'L'); assert.equal(operation.listItemId, 'i'); assert.equal(operation.updatedValue, 'y');
     return new Response(null, { status: 204 });
@@ -53,13 +66,26 @@ test('AnyList client decodes known wire bytes and sends ID-based checked operati
   assert.deepEqual(calls, ['https://www.anylist.com/data/user-data/get', 'https://www.anylist.com/data/shopping-lists/update']);
 });
 
+test('AnyList add uses the upstream protobuf form-field encoding', async () => {
+  let operation;
+  const client = createAnyListClient({ session, fetchImpl: async (_url, options) => {
+    operation = operationFromForm(options);
+    return new Response(null, { status: 204 });
+  } });
+  await client.change('groceries', 'add', { id: 'a'.repeat(32), name: 'Rice', checked: false });
+  assert.equal(operation.metadata.handlerId, 'add-shopping-list-item');
+  assert.equal(operation.listId, 'groceries'); assert.equal(operation.listItemId, 'a'.repeat(32));
+  assert.equal(operation.listItem.identifier, 'a'.repeat(32));
+  assert.equal(operation.listItem.listId, 'groceries'); assert.equal(operation.listItem.name, 'Rice');
+});
+
 test('AnyList preserves quantity units in normalized data and delete operations', async () => {
   const bytes = userDataType.encode({ shoppingListsResponse: { newLists: [{
     identifier: 'groceries', name: 'Groceries', items: [{ identifier: 'rice', name: 'Rice', checked: true, quantityPb: { amount: '2', unit: 'kg' } }],
   }] } }).finish();
   const client = createAnyListClient({ session, fetchImpl: async (url, options) => {
     if (url.endsWith('/data/user-data/get')) return new Response(bytes);
-    const operation = operationsType.decode(new Uint8Array(await options.body.get('operations').arrayBuffer())).operations[0];
+    const operation = operationFromForm(options);
     assert.equal(operation.listItem.quantityPb.amount, '2');
     assert.equal(operation.listItem.quantityPb.unit, 'kg');
     return new Response(null, { status: 204 });
@@ -189,12 +215,44 @@ test('AnyList writes use selected IDs, reuse completed items, and reject deletin
   assert.equal(state.lists[0].items.length, 2);
   await Promise.all([connector.mutate(home, 'add', { name: 'Eggs' }), connector.mutate(home, 'add', { name: 'Eggs' })]);
   assert.equal(state.lists[0].items.filter(item => item.name === 'Eggs').length, 1);
+  assert.match(state.lists[0].items.find(item => item.name === 'Eggs').id, /^[0-9a-f]{32}$/, 'new item IDs match the upstream UUID format');
   await connector.mutate(home, 'check', { id: 'milk', checked: true });
   await connector.mutate(home, 'delete', { id: 'milk' });
   assert.equal(state.lists[0].items.some(item => item.id === 'milk'), false);
   state.failWrite = true;
   await assert.rejects(connector.mutate(home, 'add', { name: 'Rice' }), /could not confirm/);
   assert.equal((await connector.read(home)).items.some(item => item.name === 'Rice'), false);
+});
+
+test('acknowledged AnyList adds stay visible until a provider refresh confirms them', async (t) => {
+  const db = openDatabase(':memory:'); t.after(() => db.close());
+  const home = Number(db.prepare("INSERT INTO households(name,timezone) VALUES ('Sample home','UTC')").run().lastInsertRowid);
+  const { state, factory } = fakeProvider(), connector = createAnyListConnector(db, { key, clientFactory: factory });
+  const previousNow = Date.now;
+  let clockOffset = 0;
+  Date.now = () => previousNow() + clockOffset;
+  t.after(() => { Date.now = previousNow; });
+  await connector.connect(home, 'adult@example.test', 'sample-password');
+  await connector.configure(home, 'groceries', true);
+  state.ignoreWrites = true;
+  let result = await connector.mutate(home, 'add', { name: 'Apples' });
+  assert.equal(result.items.some(item => item.name === 'Apples'), true);
+  assert.equal(Object.hasOwn(result.items.find(item => item.name === 'Apples'), 'syncPending'), false, 'pending state stays internal');
+  assert.equal(db.prepare('SELECT items_json FROM anylist_connections WHERE household_id=?').get(home).items_json.includes('syncPending'), false, 'legacy list cache does not expose pending metadata');
+  assert.equal(result.stale, true, 'an add not yet returned by AnyList is reported as pending');
+  clockOffset = 6000;
+  result = await connector.read(home, true);
+  assert.equal(result.items.some(item => item.name === 'Apples'), true, 'refresh must not discard an acknowledged add');
+  assert.equal(result.stale, true);
+
+  const pending = db.prepare('SELECT items_json FROM anylist_selected_lists WHERE household_id=?').get(home);
+  const item = JSON.parse(pending.items_json).find(entry => entry.name === 'Apples');
+  state.ignoreWrites = false;
+  state.lists[0].items.push({ id: item.id, name: item.name, checked: false, notes: '', quantity: '' });
+  clockOffset = 12000;
+  result = await connector.read(home, true);
+  assert.equal(result.items.filter(entry => entry.name === 'Apples').length, 1);
+  assert.equal(result.stale, false, 'provider confirmation clears the pending state');
 });
 
 test('AnyList secret encryption is household-bound and missing keys do not block disconnect', async (t) => {

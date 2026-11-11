@@ -57,8 +57,9 @@ export function createAnyListConnector(db, { key = process.env.FAMILY_HUB_INTEGR
   function syncLegacy(householdId) {
     // Keep the first selection available to 0.4.0 clients during an application update.
     const first = selectedFor(householdId)[0];
+    const items = first ? JSON.stringify(JSON.parse(first.items_json).map(({ syncPending, ...item }) => item)) : '[]';
     db.prepare('UPDATE anylist_connections SET list_id=?,list_name=?,items_json=?,last_success_at=? WHERE household_id=?')
-      .run(first?.list_id || null, first?.list_name || null, first?.items_json || '[]', first?.last_success_at || null, householdId);
+      .run(first?.list_id || null, first?.list_name || null, items, first?.last_success_at || null, householdId);
   }
 
   function cache(householdId, row, lists) {
@@ -68,8 +69,15 @@ export function createAnyListConnector(db, { key = process.env.FAMILY_HUB_INTEGR
         .run(JSON.stringify(lists.map(({ id, name }) => ({ id, name }))), householdId);
       for (const selected of selectedFor(householdId)) {
         const list = lists.find(entry => entry.id === selected.list_id);
-        if (list) db.prepare('UPDATE anylist_selected_lists SET list_name=?,items_json=?,last_success_at=?,unavailable=0 WHERE household_id=? AND list_id=?')
-          .run(list.name, JSON.stringify(list.items), now, householdId, list.id);
+        if (list) {
+          // Keep acknowledged adds until a later provider read includes them.
+          const pending = JSON.parse(selected.items_json).filter(item => item.syncPending);
+          for (const item of pending) {
+            if (!list.items.some(entry => entry.id === item.id || entry.name.toLowerCase() === item.name.toLowerCase())) list.items.push(item);
+          }
+          db.prepare('UPDATE anylist_selected_lists SET list_name=?,items_json=?,last_success_at=?,unavailable=0 WHERE household_id=? AND list_id=?')
+            .run(list.name, JSON.stringify(list.items), now, householdId, list.id);
+        }
         else db.prepare('UPDATE anylist_selected_lists SET unavailable=1 WHERE household_id=? AND list_id=?').run(householdId, selected.list_id);
       }
       syncLegacy(householdId);
@@ -87,8 +95,11 @@ export function createAnyListConnector(db, { key = process.env.FAMILY_HUB_INTEGR
   function snapshot(householdId) {
     const row = rowFor(householdId), attempt = attempts.get(householdId);
     const selected = row?.enabled ? selectedFor(householdId) : [];
-    const lists = selected.map(list => ({ id: list.list_id, name: list.list_name, items: JSON.parse(list.items_json), lastSuccessAt: list.last_success_at,
-      stale: !!attempt?.failed || !!list.unavailable || !list.last_success_at || Date.now() - Date.parse(list.last_success_at) >= refreshMs }));
+    const lists = selected.map(list => {
+      const cachedItems = JSON.parse(list.items_json), pending = cachedItems.some(item => item.syncPending);
+      return { id: list.list_id, name: list.list_name, items: cachedItems.map(({ syncPending, ...item }) => item), lastSuccessAt: list.last_success_at,
+        stale: !!attempt?.failed || pending || !!list.unavailable || !list.last_success_at || Date.now() - Date.parse(list.last_success_at) >= refreshMs };
+    });
     const first = lists[0];
     return { enabled: !!first, lists, name: first?.name || '', items: first?.items || [], stale: first?.stale || false, lastSuccessAt: first?.lastSuccessAt || null };
   }
@@ -187,7 +198,7 @@ export function createAnyListConnector(db, { key = process.env.FAMILY_HUB_INTEGR
           item = selected.items.find(entry => entry.name.toLowerCase() === name.toLowerCase());
           if (item && !item.checked) return snapshot(householdId);
           if (item) { action = 'check'; item = { ...item, checked: false }; }
-          else item = { id: crypto.randomUUID().replaceAll('-', '').toUpperCase(), name, checked: false, notes: '', quantity: '' };
+          else item = { id: crypto.randomUUID().replaceAll('-', ''), name, checked: false, notes: '', quantity: '' };
         } else {
           if (!idText(input.id)) throw new AnyListError('Choose a valid list item.', 400);
           item = selected.items.find(entry => entry.id === input.id);
@@ -200,9 +211,11 @@ export function createAnyListConnector(db, { key = process.env.FAMILY_HUB_INTEGR
         }
         await provider.change(listId, action, item);
         // Reflect only acknowledged writes; the next poll reconciles with the provider.
-        const items = action === 'delete' ? selected.items.filter(entry => entry.id !== item.id) : action === 'add' ? [...selected.items, item] : selected.items.map(entry => entry.id === item.id ? item : entry);
+        const savedItem = action === 'add' ? { ...item, syncPending: true } : item;
+        const items = action === 'delete' ? selected.items.filter(entry => entry.id !== item.id) : action === 'add' ? [...selected.items, savedItem] : selected.items.map(entry => entry.id === item.id ? item : entry);
         db.prepare('UPDATE anylist_selected_lists SET items_json=? WHERE household_id=? AND list_id=?').run(JSON.stringify(items), householdId, listId);
         syncLegacy(householdId);
+        attempts.set(householdId, { at: Date.now(), failed: false });
         notify(householdId);
         return snapshot(householdId);
       } catch (error) {
