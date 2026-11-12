@@ -21,6 +21,8 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   const household = { name: 'Sample home', timezone: 'UTC', weekStartsOn: 0, theme: 'green', dimEnabled: false, tokenBoardEnabled: false };
   let failWeatherLoad = true, failWeatherSave = false, weatherSaveCount = 0, tokenSaves = 0, screenDeletes = 0, restores = 0, holdSave;
   let failScreenPair = false;
+  let googleCalendar = { configured: true, oauthSource: 'environment', appCredentialsSaved: false, oauthClientId: '', keyReady: true, connected: false, enabled: false, calendars: [], selectedCalendarIds: [], state: 'not_connected', lastAttemptAt: null, lastSuccessAt: null, error: null };
+  let googleConnects = 0, googleSaves = 0, googleCredentialSaves = 0, googleOAuthSecret = '';
   const pairingRequests = [];
   let displayMode = false, failListSave = false, listStale = false;
   let anylist = { keyReady: true, connected: false, enabled: false, listId: '', listIds: [], lists: [], state: 'unconfigured', lastSuccessAt: null };
@@ -51,6 +53,28 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     if (route === '/api/calendar/events') return json({ events: [], errors: [] });
     if (route === '/api/tokens') return json({ people: [] });
     if (route === '/api/members') return json(sampleMembers);
+    if (route === '/api/integrations/google-calendar/credentials') {
+      if (req.method === 'PUT') {
+        googleCredentialSaves += 1; googleOAuthSecret = body.clientSecret;
+        googleCalendar = { ...googleCalendar, oauthSource: 'app', appCredentialsSaved: true, oauthClientId: body.clientId };
+        return json(googleCalendar);
+      }
+      if (req.method === 'DELETE') {
+        googleCalendar = { ...googleCalendar, oauthSource: 'environment', appCredentialsSaved: false, oauthClientId: '' };
+        return json(googleCalendar);
+      }
+    }
+    if (route === '/api/integrations/google-calendar') {
+      if (req.method === 'DELETE') { googleCalendar = { ...googleCalendar, connected: false, enabled: false, calendars: [], selectedCalendarIds: [], state: 'not_connected' }; res.writeHead(204); return res.end(); }
+      return json(googleCalendar);
+    }
+    if (route === '/api/integrations/google-calendar/connect') { googleConnects += 1; return json({ authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=sample-client' }); }
+    if (route === '/api/integrations/google-calendar/calendars' && req.method === 'POST') {
+      googleSaves += 1;
+      googleCalendar = { ...googleCalendar, enabled: body.enabled, selectedCalendarIds: body.selectedCalendarIds, calendars: googleCalendar.calendars.map(calendar => ({ ...calendar, selected: body.selectedCalendarIds.includes(calendar.id) })), state: body.enabled ? 'ok' : 'disabled' };
+      return json(googleCalendar);
+    }
+    if (route === '/api/integrations/google-calendar/refresh' && req.method === 'POST') return json(googleCalendar);
     if (route === '/api/integrations/anylist/connect') { anylist = { ...anylist, connected: true, lists: resources, state: 'disabled' }; return json(anylist); }
     if (route === '/api/integrations/anylist') {
       if (req.method === 'PUT') anylist = { ...anylist, ...body, state: body.enabled ? 'ok' : 'disabled' };
@@ -185,11 +209,20 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   });
 
   await t.test('drafts survive unrelated reloads and navigation cancellation', async () => {
-    await fill('[name=weatherLocation]', 'Draft city');
+    await tab('integrations');
+    assert.equal(await evaluate('document.querySelector("#settings-panel-calendars").contains(document.querySelector("#calendar-feed-form"))'), false);
+    await click('#calendar-add-button');
+    assert.equal(await evaluate('document.querySelector("#calendar-type-picker").hidden'), false);
+    await click('#calendar-type-picker [data-calendar-type="ical"]');
+    assert.equal(await evaluate('document.querySelector("#calendar-feed-form").hidden'), false);
+    assert.match(await evaluate('document.querySelector("#calendar-feeds").textContent'), /Sample calendar/);
+    assert.match(await evaluate('document.querySelector("#calendar-feeds [data-feed-row]").textContent'), /Enabled/);
     await fill('#calendar-feed-form [name=name]', 'Another sample calendar');
     await fill('#calendar-feed-form [name=url]', 'https://calendar.example/sample.ics');
     await evaluate('document.querySelector("#calendar-feed-form").requestSubmit()');
     await until(() => evaluate('document.querySelector("#calendar-feed-form .form-status").textContent === "Saved."'));
+    await tab('weather');
+    await fill('[name=weatherLocation]', 'Draft city');
     assert.equal(await evaluate('document.querySelector("[name=weatherLocation]").value'), 'Draft city');
     await tab('routines');
     assert.equal(await evaluate('document.querySelector(".settings-grid").dataset.settingsTab'), 'weather');
@@ -299,13 +332,71 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     assert.equal(await evaluate('!!document.querySelector(".integration-roadmap")'), false);
   });
 
+  await t.test('Google Calendar connection and calendar selection work', async () => {
+    await tab('integrations');
+    await until(() => evaluate('!!document.querySelector("#google-oauth-credentials-form")'));
+    await until(() => evaluate('!!document.querySelector("#anylist-integration")'));
+    assert.equal(await evaluate('document.querySelector("#anylist-integration").parentElement.id'), 'integrations-grid');
+    assert.equal(await evaluate('[...document.querySelector("#integrations-grid").children].map(card=>card.id).join(",")'), 'calendar-integration,anylist-integration');
+    assert.equal(await evaluate('[...document.querySelectorAll("#integrations-grid > .integration-card")].length'), 2);
+    await click('#calendar-add-button');
+    assert.equal(await evaluate('document.querySelector("#calendar-add-button").getAttribute("aria-expanded")'), 'true');
+    assert.deepEqual(await evaluate('[...document.querySelectorAll("#calendar-type-picker [data-calendar-type]")].map(button=>button.dataset.calendarType)'), ['ical', 'google']);
+    await click('#calendar-type-picker [data-calendar-type="google"]');
+    assert.equal(await evaluate('document.querySelector("#calendar-add-button").getAttribute("aria-expanded")'), 'false');
+    assert.equal(await evaluate('document.querySelector("#google-calendar-integration").hidden'), false);
+    assert.equal(await evaluate('document.querySelector("#google-calendar-status").textContent'), 'Not connected.');
+    assert.equal(await evaluate('document.querySelector("#google-calendar-connect").disabled'), false);
+    assert.equal(await evaluate('document.querySelector("#google-calendar-credential-source").textContent'), 'Using the host environment fallback.');
+    await fill('#google-oauth-credentials-form [name=clientId]', 'app-client-id');
+    await fill('#google-oauth-credentials-form [name=clientSecret]', 'app-client-secret');
+    assert.equal(googleCredentialSaves, 0);
+    await click('#google-oauth-credentials-form button[type=submit]');
+    await until(() => evaluate('document.querySelector("#google-oauth-credentials-form .form-status").textContent === "Saved."'));
+    assert.equal(googleCredentialSaves, 1);
+    assert.equal(googleOAuthSecret, 'app-client-secret');
+    assert.equal(await evaluate('document.querySelector("#google-oauth-credentials-form [name=clientId]").value'), 'app-client-id');
+    assert.equal(await evaluate('document.querySelector("#google-oauth-credentials-form [name=clientSecret]").value'), '');
+    assert.equal(await evaluate('document.querySelector("#google-calendar-credential-source").textContent'), 'Using credentials saved in Family Hub.');
+    await evaluate('window.__googlePopup=null;window.open=(...args)=>{window.__googlePopup=Object.assign(new MessageChannel().port1,{location:{href:""}});window.__googleOpenArgs=args;return window.__googlePopup}');
+    await click('#google-calendar-connect');
+    await until(() => evaluate('!!window.__googlePopup?.location.href'));
+    assert.equal(googleConnects, 1);
+    assert.equal(await evaluate('new URL(window.__googlePopup.location.href).origin'), 'https://accounts.google.com');
+
+    googleCalendar = {
+      configured: true, oauthSource: 'app', appCredentialsSaved: true, oauthClientId: 'app-client-id', keyReady: true, connected: true, enabled: false,
+      calendars: [{ id: 'primary', name: 'Private family calendar', primary: true, color: '#336699', selected: false }],
+      selectedCalendarIds: [], state: 'disabled', lastAttemptAt: null, lastSuccessAt: null, error: null,
+    };
+    await evaluate('window.dispatchEvent(new MessageEvent("message",{origin:location.origin,source:window.__googlePopup,data:{type:"family-hub-google-calendar-oauth",status:"success"}}))');
+    await until(() => evaluate('!document.querySelector("#google-calendar-form").hidden && document.querySelector("#google-calendar-options").textContent.includes("Private family calendar")'));
+    assert.match(await evaluate('document.querySelector("#google-calendar-options").textContent'), /Primary/);
+    await click('[name="selectedCalendarId"]');
+    await click('#google-calendar-form [name="enabled"]');
+    await click('#google-calendar-form button[type="submit"]');
+    await until(() => evaluate('document.querySelector("#google-calendar-form .form-status").textContent === "Saved."'));
+    assert.equal(googleSaves, 1);
+    assert.deepEqual(googleCalendar.selectedCalendarIds, ['primary']);
+    assert.equal(googleCalendar.enabled, true);
+    for (const width of [390, 1440]) {
+      await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+      assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false, `Google Calendar settings overflow at ${width}px`);
+    }
+  });
+
   await t.test('all tabs are visible and active sections use the content width on phones and desktops', async () => {
+    await until(() => evaluate('!!document.querySelector("#anylist-integration")'));
     for (const width of [390, 760, 1024, 1440, 1920]) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
       for (const section of ['display', 'screens', 'calendars', 'routines', 'weather', 'household', 'access', 'integrations']) {
         await tab(section);
         const bounds = await evaluate('(()=>{const tabs=[...document.querySelectorAll("[role=tab]")].map(node=>node.getBoundingClientRect());const grid=document.querySelector(".settings-grid").getBoundingClientRect();const panel=document.querySelector("#settings-panel-"+document.querySelector(".settings-grid").dataset.settingsTab).getBoundingClientRect();return {tabsFit:tabs.every(rect=>rect.left>=0&&rect.right<=innerWidth),grid:grid.width,panel:panel.width,overflow:document.documentElement.scrollWidth>innerWidth};})()');
         assert.equal(bounds.tabsFit, true, `${section} tabs at ${width}`); assert.equal(bounds.overflow, false, `${section} overflow at ${width}`); assert.ok(Math.abs(bounds.grid - bounds.panel) < 2, `${section} width at ${width}`);
+        if (section === 'integrations') {
+          const columns = await evaluate('getComputedStyle(document.querySelector("#integrations-grid")).gridTemplateColumns.split(" ").filter(Boolean).length');
+          assert.equal(columns, width >= 900 ? 2 : 1, `integration card columns at ${width}`);
+        }
       }
     }
     await tab('display');
@@ -389,6 +480,7 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     displayMode = true;
     await send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/?paired-test=1#lists` });
     await until(() => evaluate('document.body.dataset.view === "lists" && document.querySelector("#identity").textContent.includes("paired display") && !!document.querySelector("[data-list-item=bread]")'));
+    assert.equal(await evaluate('!!document.querySelector("#google-calendar-integration")'), false);
     assert.equal(await evaluate('document.querySelectorAll("#list-items button").length'), 0);
     assert.equal(await evaluate('document.querySelector("#list-add-form").hidden'), false);
     await click('[data-list-item="bread"]');

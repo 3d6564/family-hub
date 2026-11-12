@@ -38,7 +38,10 @@ Access, and Integrations sections. All section tabs remain visible on phones.
 Routines configure the household widget independently of calendars.
 
 Calendar events appear in start-time order across calendars and local reminders.
-Calendar order breaks ties when events start at the same time.
+Calendar order breaks ties when events start at the same time. Week-start settings
+are under **Calendars**. Manage public iCal feeds and Google Calendar together
+under **Integrations → Calendars**. Select **Add a calendar** to choose a source
+type. Google setup is in the [Google Calendar guide](docs/google-calendar.md).
 
 - Preference forms use explicit Save buttons, including token visibility.
   Unsaved edits stay in this browser tab. Leaving a section or the settings view
@@ -76,10 +79,12 @@ After 60 seconds without activity in Lists, they return to Calendar. Unfinished
 item drafts remain available until the page is reloaded. Personal devices keep
 their native keyboard and do not return automatically.
 
-The host owner must set a separate encryption key before an adult connects in
-**Settings → Integrations**. This connection uses an unofficial protocol and
-needs a live-account check before relying on it. See the
-[AnyList setup and limits](docs/anylist.md).
+The host owner must set `FAMILY_HUB_INTEGRATION_KEY` before an adult connects
+AnyList or saves Google OAuth credentials in **Settings → Integrations**.
+AnyList uses an unofficial protocol and needs a live-account check before relying
+on it. See the
+[AnyList setup and limits](docs/anylist.md) and the
+[Google Calendar guide](docs/google-calendar.md).
 
 ## Add a display
 

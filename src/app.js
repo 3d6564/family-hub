@@ -13,6 +13,7 @@ import { releaseInfo } from './release.js';
 import { createUpdateChecker } from './updates.js';
 import { currentForecast, fetchWeather, weatherProviderIds, weatherRefreshMinutes } from './weather.js';
 import { mountAnyList } from './anylist.js';
+import { createGoogleCalendarConnector, mountGoogleCalendar, mountGoogleCalendarCallback } from './google-calendar.js';
 
 const publicDir = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'public');
 const clients = new Map();
@@ -57,6 +58,14 @@ function saveDeviceScreen(db, token, metrics) {
 export function createApp(db, dependencies = {}) {
   // Only safe connection outcomes are retained; provider errors can contain secrets.
   const weatherAttempts = new Map(), calendarAttempts = new Map();
+  const googleCalendar = createGoogleCalendarConnector(db, {
+    key: dependencies.integrationKey,
+    clientId: dependencies.googleOAuthClientId,
+    clientSecret: dependencies.googleOAuthClientSecret,
+    siteUrl: dependencies.siteUrl,
+    fetch: dependencies.googleCalendarFetch,
+    notify: householdId => emit(householdId, 'calendar'),
+  });
   const app = express();
   const deploymentVersion = crypto.randomUUID();
   app.disable('x-powered-by');
@@ -146,8 +155,10 @@ export function createApp(db, dependencies = {}) {
   });
 
   const auth = authenticate(db);
+  mountGoogleCalendarCallback(app, googleCalendar);
   app.use('/api', auth, csrf);
   mountAnyList(app, db, { key: dependencies.integrationKey, clientFactory: dependencies.anylistClientFactory, notify: householdId => emit(householdId, 'lists') });
+  mountGoogleCalendar(app, googleCalendar);
   app.get('/api/me', (req, res) => {
     const household = db.prepare('SELECT id,name,display_title displayTitle,timezone,week_starts_on weekStartsOn,dim_enabled dimEnabled,dim_start dimStart,dim_end dimEnd,theme,token_board_enabled tokenBoardEnabled,routine_morning_start routineMorningStart,routine_afternoon_start routineAfternoonStart,routine_bedtime_start routineBedtimeStart FROM households WHERE id=?').get(req.auth.household_id);
     household.tokenBoardEnabled = !!household.tokenBoardEnabled;
@@ -616,6 +627,9 @@ export function createApp(db, dependencies = {}) {
         errors.push({ feedId: feed.id, calendar: feed.name, message: `Could not load ${feed.name}. Check the calendar connection and try again.` });
       }
     }
+    const google = await googleCalendar.readEvents(req.auth.household_id, from, to);
+    events.push(...google.events.map((event, index) => ({ event, order: feeds.length + index })));
+    errors.push(...google.errors);
     events.sort((a, b) => Date.parse(a.event.start.dateTime || a.event.start.date) - Date.parse(b.event.start.dateTime || b.event.start.date) || a.order - b.order);
     res.json({ events: events.map(({ event }) => event), errors });
   }));
