@@ -22,7 +22,7 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   let failWeatherLoad = true, failWeatherSave = false, weatherSaveCount = 0, tokenSaves = 0, screenDeletes = 0, restores = 0, holdSave;
   let failScreenPair = false;
   const pairingRequests = [];
-  let displayMode = false, failListSave = false;
+  let displayMode = false, failListSave = false, listStale = false;
   let anylist = { keyReady: true, connected: false, enabled: false, listId: '', listIds: [], lists: [], state: 'unconfigured', lastSuccessAt: null };
   let listItems = [{ id: 'milk', name: 'Milk', notes: '', quantity: '2', quantityUnit: 'L', checked: false }, { id: 'bread', name: 'Bread', notes: '', quantity: '', checked: true }];
   const resources = [{ id: 'groceries', name: 'Sample groceries' }, { id: 'household', name: 'Sample household' }, { id: 'pharmacy', name: 'Pharmacy' }, { id: 'tools', name: 'Tools' }];
@@ -30,8 +30,8 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   const itemsFor = id => id === 'groceries' ? listItems : extraItems.get(id);
   let nextListItem = 10;
   const listSnapshot = () => {
-    const lists = anylist.enabled ? anylist.listIds.map(id => ({ ...resources.find(list => list.id === id), items: itemsFor(id), lastSuccessAt: '2026-10-25T12:00:00Z', stale: false })) : [];
-    return { enabled: !!lists.length, lists, name: lists[0]?.name || '', items: lists[0]?.items || [], lastSuccessAt: lists[0]?.lastSuccessAt || null, stale: false };
+    const lists = anylist.enabled ? anylist.listIds.map(id => ({ ...resources.find(list => list.id === id), items: itemsFor(id), lastSuccessAt: '2026-10-25T12:00:00Z', stale: listStale })) : [];
+    return { enabled: !!lists.length, lists, name: lists[0]?.name || '', items: lists[0]?.items || [], lastSuccessAt: lists[0]?.lastSuccessAt || null, stale: listStale };
   };
   let weather = { enabled: false, location: 'Sample city', provider: 'open-meteo', units: 'f', days: 5, refreshMinutes: 30, hasKey: { openweathermap: true }, status: { state: 'disabled' } };
   let feeds = [{ id: 1, name: 'Sample calendar', color: '#4285f4', enabled: 1, status: { state: 'not_checked' } }];
@@ -47,7 +47,7 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     if (route === '/api/me') return json({ user: displayMode ? null : { id: 1, name: 'Sample adult', role: 'adult' }, device: displayMode ? 'Sample wall' : null, household });
     if (route === '/api/version') return json({ version: 'sample-deployment' });
     if (route === '/api/release') return json({ version: '0.3.3', channel: 'release' });
-    if (route === '/api/dashboard') return json({ today: '2026-10-25', routines: [], chores: [], plans: [], weather: null });
+    if (route === '/api/dashboard') return json({ today: '2026-10-25', routines: [{ id: 1, title: 'Read together', child_id: 2, child_name: 'Sample child', period: 'morning', completed: false }], chores: [{ id: 1, title: 'Set the table', assignee_name: 'Sample child', reward_quarters: 2, completed: false }], plans: [], weather: null });
     if (route === '/api/calendar/events') return json({ events: [], errors: [] });
     if (route === '/api/tokens') return json({ people: [] });
     if (route === '/api/members') return json(sampleMembers);
@@ -134,6 +134,29 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/#settings` });
   await until(() => evaluate('!!document.querySelector("#settings-tab-screens")'));
+
+  await t.test('desktop places appearance, mode, and settings at the rail bottom; mobile keeps header controls', async () => {
+    await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    const desktop = await evaluate(`(()=>{const ids=['appearance-menu-button','theme-toggle','menu-button'],nodes=ids.map(id=>document.getElementById(id)),rects=nodes.map(node=>node.getBoundingClientRect()),styles=nodes.map(node=>{const style=getComputedStyle(node);return {border:style.borderStyle,background:style.backgroundColor,color:style.color}}),positions=nodes.map(node=>getComputedStyle(node).position),icons=[...document.querySelectorAll('#app>nav .rail-icon'),document.querySelector('#theme-toggle .rail-icon:not([hidden])'),document.querySelector('#menu-button .rail-icon')],iconBounds=icons.map(icon=>{const rect=icon.getBoundingClientRect(),style=getComputedStyle(icon);return {width:rect.width,height:rect.height,strokeWidth:style.strokeWidth}});return {rects:rects.map(rect=>({left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom})),positions,styles,iconBounds,themeLabel:nodes[0].textContent.trim(),pressed:nodes[1].getAttribute('aria-pressed'),modeLabel:getComputedStyle(nodes[1],'::after').content,accountIconVisible:getComputedStyle(nodes[2].querySelector('.account-icon')).display!=='none',scrollWidth:document.documentElement.scrollWidth,innerWidth}})()`);
+    assert.deepEqual(desktop.positions, ['fixed', 'fixed', 'fixed']);
+    assert.ok(desktop.rects.every(rect => rect.left >= 0 && rect.right <= 88), `Controls must fit in the left rail: ${JSON.stringify(desktop)}`);
+    assert.ok(desktop.rects[0].top < desktop.rects[1].top && desktop.rects[1].top < desktop.rects[2].top, `Controls must follow Appearance, mode, Settings order: ${JSON.stringify(desktop)}`);
+    assert.ok(desktop.styles.every(style => style.border === 'none' && style.background === 'rgba(0, 0, 0, 0)' && style.color === desktop.styles[0].color), `Rail controls must share the unboxed navigation style: ${JSON.stringify(desktop.styles)}`);
+    assert.equal(new Set(desktop.iconBounds.map(icon => `${icon.width}x${icon.height}`)).size, 1, `Left-rail icons must use one visible box: ${JSON.stringify(desktop.iconBounds)}`);
+    assert.ok(desktop.iconBounds.every(icon => icon.width === 28 && icon.height === 28 && icon.strokeWidth === '1.8px'), `Rail icons must share the same size and stroke: ${JSON.stringify(desktop.iconBounds)}`);
+    assert.match(desktop.themeLabel, /Theme$/);
+    assert.equal(desktop.modeLabel, desktop.pressed === 'true' ? '"Light"' : '"Dark"');
+    assert.equal(desktop.accountIconVisible, true);
+    assert.ok(desktop.scrollWidth <= desktop.innerWidth, `Desktop page must not overflow horizontally: ${JSON.stringify(desktop)}`);
+
+    await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
+    const mobile = await evaluate(`(()=>{const header=document.querySelector('#app>header').getBoundingClientRect(),nodes=['theme-toggle','menu-button'].map(id=>document.getElementById(id)),rects=nodes.map(node=>node.getBoundingClientRect()),iconSizes=[...document.querySelectorAll('#app>nav .rail-icon')].map(icon=>{const rect=icon.getBoundingClientRect();return String(rect.width)+'x'+String(rect.height)});return {positions:nodes.map(node=>getComputedStyle(node).position),rects:rects.map(rect=>({top:rect.top,bottom:rect.bottom})),header:{top:header.top,bottom:header.bottom},iconSizes,scrollWidth:document.documentElement.scrollWidth,innerWidth}})()`);
+    assert.deepEqual(mobile.positions, ['static', 'static']);
+    assert.ok(mobile.rects.every(rect => rect.top >= mobile.header.top && rect.bottom <= mobile.header.bottom), `Settings and mode controls must stay in the mobile header: ${JSON.stringify(mobile)}`);
+    assert.equal(new Set(mobile.iconSizes).size, 1, `Mobile navigation icons must remain the same size: ${JSON.stringify(mobile.iconSizes)}`);
+    assert.ok(mobile.scrollWidth <= mobile.innerWidth, `Mobile page must not overflow horizontally: ${JSON.stringify(mobile)}`);
+    await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+  });
 
   await t.test('failed weather loading does not block other settings and can be retried', async () => {
     assert.equal(await evaluate('document.querySelector("#release-info").textContent'), 'Installed version: 0.3.3');
@@ -316,7 +339,7 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   });
 
   await t.test('Lists add, check, completed deletion, text escaping, and phone/sidebar layout work', async () => {
-    await click('[data-nav="lists"] b');
+    await click('[data-nav="lists"]');
     await until(() => evaluate('document.querySelectorAll("[data-list-item]").length === 2'));
     assert.match(await evaluate('document.querySelector("[data-list-item=milk]").closest("label").textContent'), /2 L Milk/);
     for (const width of [390, 760, 1024, 1440, 1920]) {
@@ -331,11 +354,18 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     await fill('#list-add-form [name=name]', 'Eggs <img src=x>');
     failListSave = true; await click('#list-add-form button');
     await until(() => evaluate('document.querySelector("#list-status").textContent.includes("Sample list save failure")'));
+    assert.equal(await evaluate('document.querySelector("#list-status").dataset.state'), 'error');
     assert.equal(await evaluate('document.querySelector("#list-add-form [name=name]").value'), 'Eggs <img src=x>');
     failListSave = false; await click('#list-add-form button');
     await until(() => evaluate('document.querySelectorAll("[data-list-item]").length === 3'));
+    assert.equal(await evaluate('document.querySelector("#list-status").dataset.state'), 'ready');
     assert.equal(await evaluate('document.querySelectorAll("#list-items img").length'), 0);
     assert.equal(await evaluate('document.querySelector("#list-add-form [name=name]").value'), '');
+    listStale = true; await click('#list-refresh');
+    await until(() => evaluate('document.querySelector(".connection-status").dataset.state === "stale"'));
+    assert.match(await evaluate('document.querySelector(".connection-status").textContent'), /not refreshed/);
+    listStale = false; await click('#list-refresh');
+    await until(() => evaluate('document.querySelector(".connection-status").dataset.state === "ready"'));
     await click('[data-list-item="milk"]');
     await until(() => evaluate(`!!document.querySelector('[aria-label="Delete completed item Milk"]')`));
     acceptDialog = true; await click('[aria-label="Delete completed item Milk"]'); acceptDialog = false;
@@ -344,7 +374,7 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   });
 
   await t.test('calendar remains within the viewport after the sidebar change', async () => {
-    await click('[data-nav="calendar"] b');
+    await click('[data-nav="calendar"]');
     await until(() => evaluate('document.querySelector("#clock").textContent.length > 0'));
     for (const width of [390, 760, 800, 1024, 1440, 1920]) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
@@ -450,6 +480,19 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     assert.equal(await evaluate('document.querySelector("[data-list-add=groceries] [name=name]").value'), 'Keep this draft');
   });
 
+  await t.test('task screens keep management sections collapsed until requested', async () => {
+    await click('[data-nav="chores"]');
+    await until(() => evaluate('document.body.dataset.view === "chores"'));
+    assert.equal(await evaluate('[...document.querySelectorAll("[data-view=chores] details")].find(node=>node.querySelector("summary").textContent === "All chores").open'), false);
+    assert.match(await evaluate('document.querySelector("[data-chore]").parentElement.textContent'), /Set the table/);
+    await evaluate('[...document.querySelectorAll("[data-view=chores] details")].find(node=>node.querySelector("summary").textContent === "All chores").querySelector("summary").click()');
+    assert.equal(await evaluate('[...document.querySelectorAll("[data-view=chores] details")].find(node=>node.querySelector("summary").textContent === "All chores").open'), true);
+    await click('[data-nav="routines"]');
+    await until(() => evaluate('document.body.dataset.view === "routines"'));
+    assert.equal(await evaluate('[...document.querySelectorAll("[data-view=routines] details")].find(node=>node.querySelector("summary").textContent === "All routines").open'), false);
+    assert.match(await evaluate('document.querySelector("[data-routine]").parentElement.textContent'), /Read together/);
+  });
+
   await t.test('device palette picker applies all themes, preserves dark mode, and restores household default', async () => {
     await click('[data-nav="calendar"]');
     await click('#appearance-menu-button');
@@ -463,11 +506,20 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     const lightAccents = {};
     const themes = ['green', 'slate', 'blue', 'warm', 'teal', 'purple', 'rose', 'ocean', 'forest', 'midnight', 'sunset', 'monochrome', 'lavender', 'coral', 'berry', 'sand'];
     assert.equal(await evaluate('document.querySelectorAll("[data-device-theme]").length'), 16);
+    const roleContrast = async () => evaluate(`(()=>{const panel=document.createElement('section');panel.className='settings-panel';panel.innerHTML='<form class="settings-form"><label>Sample label<input value="Sample value"></label></form><span class="muted">Muted text</span><p class="form-status error">Sample error</p><p id="list-status" data-state="error">List error</p><p class="connection-status" data-state="stale">List is stale</p><button style="outline:3px solid var(--focus)">Focus</button>';document.body.append(panel);const rgb=value=>{const mixed=value.match(/color\\(srgb ([^)]+)\\)/),channels=(mixed?mixed[1]:value.match(/rgba?\\(([^)]+)\\)/)[1]).match(/[\\d.]+/g).slice(0,3).map(Number);return mixed?channels.map(channel=>channel*255):channels},luminance=value=>{const c=rgb(value).map(n=>n/255).map(n=>n<=.04045?n/12.92:((n+.055)/1.055)**2.4);return .2126*c[0]+.7152*c[1]+.0722*c[2]},contrast=(a,b)=>{const x=luminance(a),y=luminance(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05)},surface=getComputedStyle(panel).backgroundColor,label=getComputedStyle(panel.querySelector('label')),input=getComputedStyle(panel.querySelector('input')),muted=getComputedStyle(panel.querySelector('.muted')),error=getComputedStyle(panel.querySelector('.form-status')),listError=getComputedStyle(panel.querySelector('#list-status')),stale=getComputedStyle(panel.querySelector('.connection-status')),focus=getComputedStyle(panel.querySelector('button'));const result={muted:contrast(muted.color,surface),label:contrast(label.color,surface),input:contrast(input.color,input.backgroundColor),error:contrast(error.color,error.backgroundColor),listError:contrast(listError.color,listError.backgroundColor),stale:contrast(stale.color,stale.backgroundColor),focus:contrast(focus.outlineColor,surface)};panel.remove();return result})()`);
     for (const theme of themes) {
       await click(`[data-device-theme="${theme}"]`);
       const values = await evaluate(`(()=>{const root=getComputedStyle(document.documentElement),button=getComputedStyle(document.querySelector("#theme-toggle"));return {theme:document.body.dataset.theme,accent:root.getPropertyValue("--accent").trim(),muted:root.getPropertyValue("--muted").trim(),focus:getComputedStyle(document.querySelector("#today")).outlineColor,header:getComputedStyle(document.querySelector("header")).backgroundColor,preview:getComputedStyle(document.querySelector(".palette-${theme}")).backgroundColor,device:localStorage.getItem("family-hub-device-theme")}})()`);
       assert.equal(values.theme, theme); assert.equal(values.device, theme);
       assert.ok(values.accent && values.muted && values.focus && values.header && values.preview);
+      const contrast = await roleContrast();
+      assert.ok(contrast.muted >= 4.5, `${theme} muted text contrast: ${contrast.muted}`);
+      assert.ok(contrast.label >= 4.5, `${theme} settings label contrast: ${contrast.label}`);
+      assert.ok(contrast.input >= 4.5, `${theme} input text contrast: ${contrast.input}`);
+      assert.ok(contrast.error >= 4.5, `${theme} settings error contrast: ${contrast.error}`);
+      assert.ok(contrast.listError >= 4.5, `${theme} list error contrast: ${contrast.listError}`);
+      assert.ok(contrast.stale >= 4.5, `${theme} stale-list contrast: ${contrast.stale}`);
+      assert.ok(contrast.focus >= 3, `${theme} focus outline contrast: ${contrast.focus}`);
       lightAccents[theme] = values.accent;
     }
     assert.equal(new Set(Object.values(lightAccents)).size, 16);
@@ -481,11 +533,21 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     const darkAccents = {};
     for (const theme of themes) {
       await click(`[data-device-theme="${theme}"]`);
-      const dark = await evaluate(`(()=>{const root=getComputedStyle(document.documentElement),holder=document.createElement("div");holder.innerHTML='<div class="day today">Today</div><button class="event">Event</button><button class="agenda-event">Agenda</button>';document.body.append(holder);const rgb=value=>value.match(/[\\d.]+/g).slice(0,3).map(Number),luminance=value=>{const c=rgb(value).map(n=>n/255).map(n=>n<=.04045?n/12.92:((n+.055)/1.055)**2.4);return .2126*c[0]+.7152*c[1]+.0722*c[2]},contrast=(a,b)=>{const x=luminance(a),y=luminance(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05)},event=getComputedStyle(holder.querySelector('.event')),agenda=getComputedStyle(holder.querySelector('.agenda-event')),today=getComputedStyle(holder.querySelector('.day.today')),result={theme:document.body.dataset.theme,accent:root.getPropertyValue('--accent').trim(),muted:getComputedStyle(document.querySelector('.muted')).color,header:getComputedStyle(document.querySelector('header')).backgroundColor,primary:getComputedStyle(document.querySelector('.primary')).backgroundColor,focus:getComputedStyle(document.querySelector('#today')).outlineColor,backdrop:getComputedStyle(document.querySelector('dialog')).boxShadow,eventContrast:contrast(event.color,event.backgroundColor),eventColor:event.color,eventBackground:event.backgroundColor,agendaContrast:contrast(agenda.color,agenda.backgroundColor),todayContrast:contrast(today.color,today.backgroundColor)};holder.remove();return result})()`);
+      const dark = await evaluate(`(()=>{const root=getComputedStyle(document.documentElement),holder=document.createElement("div");holder.innerHTML='<div class="day today">Today</div><button class="event">Event</button><button class="agenda-event">Agenda</button>';document.body.append(holder);const rgb=value=>{const mixed=value.match(/color\\(srgb ([^)]+)\\)/),channels=(mixed?mixed[1]:value.match(/rgba?\\(([^)]+)\\)/)[1]).match(/[\\d.]+/g).slice(0,3).map(Number);return mixed?channels.map(channel=>channel*255):channels},luminance=value=>{const c=rgb(value).map(n=>n/255).map(n=>n<=.04045?n/12.92:((n+.055)/1.055)**2.4);return .2126*c[0]+.7152*c[1]+.0722*c[2]},contrast=(a,b)=>{const x=luminance(a),y=luminance(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05)},event=getComputedStyle(holder.querySelector('.event')),agenda=getComputedStyle(holder.querySelector('.agenda-event')),today=getComputedStyle(holder.querySelector('.day.today')),palette=document.querySelector('[data-device-theme="${theme}"]'),paletteStyle=getComputedStyle(palette),paletteDots=[...palette.querySelectorAll('.palette-preview i')].map(node=>getComputedStyle(node).backgroundColor),result={theme:document.body.dataset.theme,accent:root.getPropertyValue('--accent').trim(),muted:getComputedStyle(document.querySelector('.muted')).color,header:getComputedStyle(document.querySelector('header')).backgroundColor,primary:getComputedStyle(document.querySelector('.primary')).backgroundColor,focus:getComputedStyle(document.querySelector('#today')).outlineColor,backdrop:getComputedStyle(document.querySelector('dialog')).boxShadow,eventContrast:contrast(event.color,event.backgroundColor),eventColor:event.color,eventBackground:event.backgroundColor,agendaContrast:contrast(agenda.color,agenda.backgroundColor),todayContrast:contrast(today.color,today.backgroundColor),paletteBackgroundLuminance:luminance(paletteStyle.backgroundColor),paletteTextContrast:contrast(paletteStyle.color,paletteStyle.backgroundColor),paletteFirstDot:paletteDots[0]};holder.remove();return result})()`);
       assert.equal(dark.theme, theme); assert.ok(dark.accent && dark.muted && dark.header && dark.primary && dark.focus && dark.backdrop);
       assert.ok(dark.eventContrast >= 4.5, `${theme} event text contrast: ${dark.eventContrast} (${dark.eventColor} on ${dark.eventBackground})`);
       assert.ok(dark.agendaContrast >= 4.5, `${theme} agenda text contrast: ${dark.agendaContrast}`);
       assert.ok(dark.todayContrast >= 4.5, `${theme} today text contrast: ${dark.todayContrast}`);
+      assert.ok(dark.paletteBackgroundLuminance < 0.08, `${theme} palette card should preview dark colors: ${dark.paletteBackgroundLuminance}`);
+      assert.ok(dark.paletteTextContrast >= 4.5, `${theme} dark palette label contrast: ${dark.paletteTextContrast}`);
+      const contrast = await roleContrast();
+      assert.ok(contrast.muted >= 4.5, `${theme} dark muted text contrast: ${contrast.muted}`);
+      assert.ok(contrast.label >= 4.5, `${theme} dark settings label contrast: ${contrast.label}`);
+      assert.ok(contrast.input >= 4.5, `${theme} dark input text contrast: ${contrast.input}`);
+      assert.ok(contrast.error >= 4.5, `${theme} dark settings error contrast: ${contrast.error}`);
+      assert.ok(contrast.listError >= 4.5, `${theme} dark list error contrast: ${contrast.listError}`);
+      assert.ok(contrast.stale >= 4.5, `${theme} dark stale-list contrast: ${contrast.stale}`);
+      assert.ok(contrast.focus >= 3, `${theme} dark focus outline contrast: ${contrast.focus}`);
       darkAccents[theme] = dark.accent;
     }
     assert.equal(new Set(Object.values(darkAccents)).size, 16, 'dark accents retain each palette color');

@@ -5,7 +5,11 @@ export function createListsView({ api, settingsForms, getMe }) {
   let busy = false, loading = false, refreshAgain = false, revision = 0, saved, activeId, nextPanel = 0;
   const panels = new Map(), drafts = new Map(), wide = matchMedia('(min-width:1000px)');
   const adult = () => getMe()?.user?.role === 'adult';
-  const status = message => { $('#list-status').textContent = message; };
+  const status = (message, state = 'ready') => {
+    const node = $('#list-status');
+    node.textContent = message;
+    node.dataset.state = state;
+  };
   const endpoint = listId => `/api/lists/anylist/${encodeURIComponent(listId)}/items`;
 
   function layout() {
@@ -55,7 +59,7 @@ export function createListsView({ api, settingsForms, getMe }) {
     const focused = document.activeElement, focusList = focused?.closest('[data-list-id]')?.dataset.listId, focusItem = focused?.dataset.listItem;
     const lists = data.enabled ? data.lists : [];
     $('#list-name').textContent = lists.length === 1 ? lists[0].name : 'Lists';
-    status(!lists.length ? 'No shared lists are enabled. An adult can connect AnyList in Settings → Integrations.' : 'AnyList is the source of truth.');
+    status(!lists.length ? 'No shared lists are enabled. An adult can connect AnyList in Settings → Integrations.' : 'AnyList is the source of truth.', lists.length ? 'ready' : 'empty');
     for (const [id, panel] of panels) if (!lists.some(list => list.id === id)) {
       drafts.set(id, panel.input.value); panel.root.remove(); panel.tab.remove(); panels.delete(id);
     }
@@ -64,6 +68,7 @@ export function createListsView({ api, settingsForms, getMe }) {
       if (!panel) { panel = createPanel(list); panels.set(list.id, panel); }
       panel.heading.textContent = list.name; panel.tab.textContent = list.name;
       panel.connection.textContent = list.stale ? 'Showing saved items. This list has not refreshed. Ask an adult to check the connection.' : list.lastSuccessAt ? `Updated ${new Date(list.lastSuccessAt).toLocaleString()}` : 'Waiting for an update.';
+      panel.connection.dataset.state = list.stale ? 'stale' : list.lastSuccessAt ? 'ready' : 'pending';
       panel.items.replaceChildren();
       for (const checked of [false, true]) {
         const items = list.items.filter(item => item.checked === checked);
@@ -109,9 +114,9 @@ export function createListsView({ api, settingsForms, getMe }) {
     const focused = returnFocus || document.activeElement;
     busy = true; revision++; $('#shared-list').setAttribute('aria-busy', 'true');
     for (const control of document.querySelectorAll('#shared-list input,#shared-list button')) control.disabled = true;
-    status('Saving to AnyList…');
+    status('Saving to AnyList…', 'saving');
     try { render(await work()); }
-    catch (error) { if (saved) render(saved); status(error.message); }
+    catch (error) { if (saved) render(saved); status(error.message, 'error'); }
     finally {
       busy = false; $('#shared-list').removeAttribute('aria-busy');
       for (const control of document.querySelectorAll('#shared-list input,#shared-list button')) control.disabled = false;
@@ -123,9 +128,9 @@ export function createListsView({ api, settingsForms, getMe }) {
   async function refresh(force = false) {
     if (busy || loading) { refreshAgain = true; return; }
     loading = true; const version = revision;
-    if (!saved) status('Loading lists…');
+    if (!saved) status('Loading lists…', 'loading');
     try { const data = await api(`/api/lists/anylist${force ? '?refresh=1' : ''}`); if (!busy && version === revision) render(data); }
-    catch (error) { if (!busy && version === revision) status(error.message); }
+    catch (error) { if (!busy && version === revision) status(error.message, 'error'); }
     finally { loading = false; if (refreshAgain) { refreshAgain = false; refresh(); } }
   }
 
