@@ -1,6 +1,6 @@
 {
   "name": "family-hub",
-  "version": "0.4.5",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -12,7 +12,7 @@
     "bootstrap": "node src/bootstrap.js",
     "pairing-code": "node src/pairing-code.js",
     "test": "node --test --test-concurrency=1",
-    "check": "node --check src/server.js && node --check src/release.js && node --check src/updates.js && node --check src/app.js && node --check public/app.js && node --check public/routine-view.js && node --check src/anylist.js && node --check src/anylist-client.js && node --check src/anylist-protocol.js && node --check public/lists-view.js && node --check public/kiosk-input.js"
+    "check": "node --check src/server.js && node --check src/release.js && node --check src/updates.js && node --check src/app.js && node --check src/google-calendar.js && node --check public/app.js && node --check public/routine-view.js && node --check src/anylist.js && node --check src/anylist-client.js && node --check src/anylist-protocol.js && node --check public/lists-view.js && node --check public/kiosk-input.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.2.0",
