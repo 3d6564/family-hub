@@ -271,11 +271,13 @@ test('iCal connection tests are adult-only, do not save feeds, and hide feed URL
   const failure = await response.json();
   assert.match(failure.error, /Could not connect/);
   assert.equal(JSON.stringify(failure).includes('broken-private.ics'), false);
+  response = await fetch(route, { method: 'POST', headers, body: JSON.stringify({ feedId: savedId, url: 'https://calendar.example.test/replacement.ics' }) });
+  assert.equal(response.status, 200);
   const feeds = await (await fetch(`${base}/api/calendar/feeds`, { headers: { cookie: `family_user_session=${adultToken}` } })).json();
-  assert.equal(feeds[0].status.state, 'error');
+  assert.equal(feeds[0].status.state, 'error', 'testing a replacement URL must not change the saved URL status');
   assert.equal(JSON.stringify(feeds).includes('broken-private.ics'), false);
   db.prepare('INSERT INTO calendar_feeds(household_id,name,url,color) VALUES (?,?,?,?)').run(otherHome, 'Other', 'https://other.example/secret.ics', '#ffffff');
-  assert.equal(calls, 2);
+  assert.equal(calls, 3);
 });
 
 test('children can be added without login details and adults cannot', async (t) => {

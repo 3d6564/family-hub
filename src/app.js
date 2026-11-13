@@ -587,18 +587,19 @@ export function createApp(db, dependencies = {}) {
     const color = text(req.body.color, 7) || saved?.color || '#4285f4';
     if (!/^#[0-9a-f]{6}$/i.test(color)) return res.status(400).json({ error: 'Calendar color must be a six-digit hex color.' });
     const feed = { id: saved?.id || 0, household_id: householdId, name, url: validation.url, color };
-    const now = new Date().toISOString(), previous = saved && calendarAttempts.get(householdId)?.get(saved.id);
+    const tracksSavedStatus = saved && validation.url === saved.url;
+    const now = new Date().toISOString(), previous = tracksSavedStatus && calendarAttempts.get(householdId)?.get(saved.id);
     try {
       const from = new Date(), to = new Date(from.getTime() + 31 * 86400000);
       const events = await (dependencies.fetchFeedEvents || fetchFeedEvents)(feed, from, to);
-      if (saved) {
+      if (tracksSavedStatus) {
         const statuses = calendarAttempts.get(householdId) || new Map();
         calendarAttempts.set(householdId, statuses);
         statuses.set(saved.id, { state: 'ok', lastAttemptAt: now, lastSuccessAt: now });
       }
       res.json({ ok: true, eventCount: Array.isArray(events) ? events.length : 0 });
     } catch {
-      if (saved) {
+      if (tracksSavedStatus) {
         const statuses = calendarAttempts.get(householdId) || new Map();
         calendarAttempts.set(householdId, statuses);
         statuses.set(saved.id, { state: 'error', lastAttemptAt: now, lastSuccessAt: previous?.lastSuccessAt || null });
