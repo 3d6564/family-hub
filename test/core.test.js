@@ -244,6 +244,42 @@ test('calendar feed CRUD is adult-only, household-scoped, and never returns URLs
   assert.equal((await fetch(`${route}/${created.id}`, { method: 'DELETE', headers })).status, 204);
 });
 
+test('iCal connection tests are adult-only, do not save feeds, and hide feed URLs', async (t) => {
+  const previous = process.env.APP_ORIGIN; process.env.APP_ORIGIN = 'http://127.0.0.1';
+  t.after(() => previous === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previous);
+  const db = database(), home = household(db, 'Home'), otherHome = household(db, 'Other');
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?,'adult')").run(home, 'calendar-test@example.test', 'Adult', 'unused').lastInsertRowid);
+  const child = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?,'child')").run(home, 'calendar-child@example.test', 'Child', 'unused').lastInsertRowid);
+  const adultToken = createSession(db, { householdId: home, userId: adult }), childToken = createSession(db, { householdId: home, userId: child });
+  let calls = 0;
+  const server = createApp(db, { fetchFeedEvents: async feed => { calls++; if (feed.url.includes('broken')) throw new Error(`Failed ${feed.url}`); return [{ title: 'Test event' }]; } }).listen(0);
+  t.after(() => { server.close(); db.close(); }); await new Promise(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`, route = `${base}/api/calendar/feeds/test`;
+  const headers = { cookie: `family_user_session=${adultToken}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' };
+  assert.equal((await fetch(route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 401);
+  assert.equal((await fetch(route, { method: 'POST', headers: { ...headers, cookie: `family_user_session=${childToken}` }, body: '{}' })).status, 403);
+  let response = await fetch(route, { method: 'POST', headers, body: JSON.stringify({ url: 'http://calendar.example.test/feed.ics' }) });
+  assert.equal(response.status, 400);
+  assert.equal(calls, 0);
+  response = await fetch(route, { method: 'POST', headers, body: JSON.stringify({ name: 'Work', url: 'https://calendar.example.test/private.ics', color: '#4285f4' }) });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, eventCount: 1 });
+  assert.equal(db.prepare('SELECT COUNT(*) count FROM calendar_feeds WHERE household_id=?').get(home).count, 0);
+  const savedId = Number(db.prepare('INSERT INTO calendar_feeds(household_id,name,url,color) VALUES (?,?,?,?)').run(home, 'Broken', 'https://calendar.example.test/broken-private.ics', '#123456').lastInsertRowid);
+  response = await fetch(route, { method: 'POST', headers, body: JSON.stringify({ feedId: savedId }) });
+  assert.equal(response.status, 502);
+  const failure = await response.json();
+  assert.match(failure.error, /Could not connect/);
+  assert.equal(JSON.stringify(failure).includes('broken-private.ics'), false);
+  response = await fetch(route, { method: 'POST', headers, body: JSON.stringify({ feedId: savedId, url: 'https://calendar.example.test/replacement.ics' }) });
+  assert.equal(response.status, 200);
+  const feeds = await (await fetch(`${base}/api/calendar/feeds`, { headers: { cookie: `family_user_session=${adultToken}` } })).json();
+  assert.equal(feeds[0].status.state, 'error', 'testing a replacement URL must not change the saved URL status');
+  assert.equal(JSON.stringify(feeds).includes('broken-private.ics'), false);
+  db.prepare('INSERT INTO calendar_feeds(household_id,name,url,color) VALUES (?,?,?,?)').run(otherHome, 'Other', 'https://other.example/secret.ics', '#ffffff');
+  assert.equal(calls, 3);
+});
+
 test('children can be added without login details and adults cannot', async (t) => {
   const previous = process.env.APP_ORIGIN; process.env.APP_ORIGIN = 'http://127.0.0.1';
   t.after(() => previous === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previous);

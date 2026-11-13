@@ -3,15 +3,16 @@ import { routinePeriodGroups } from './routine-view.js';
 import { createSettingsForms } from './settings-forms.js';
 import { createListsView } from './lists-view.js';
 import { createKioskInput } from './kiosk-input.js';
+import { createCalendarSettings } from './calendar-settings.js';
 const $=(s,p=document)=>p.querySelector(s), $$=(s,p=document)=>[...p.querySelectorAll(s)];
-let me, dashboard, members=[], routineCatalog=[], choreCatalog=[], feedCatalog=[], calendarEvents=[], weatherKeys={}, deploymentVersion, cursor=new Date(), openEvent, pinnedMonth=false, shownDay=new Date().toLocaleDateString('en-CA'), shownRoutinePeriod, setupMode=false;
+let me, dashboard, members=[], routineCatalog=[], choreCatalog=[], calendarEvents=[], weatherKeys={}, deploymentVersion, cursor=new Date(), openEvent, pinnedMonth=false, shownDay=new Date().toLocaleDateString('en-CA'), shownRoutinePeriod, setupMode=false;
 let weatherHasKeys = {};
-let googleOAuthPopup = null;
 const settingsForms = createSettingsForms({
   extraState: form => form.id === 'weather-form' ? JSON.stringify(weatherKeys) : '',
   onDiscard: form => { if (form.id === 'weather-form') { weatherKeys = {}; form.dataset.activeProvider = ''; showWeatherProvider(form.elements.weatherProvider.value); } if(form.id==='screen-pair-form')syncScreenPairMode(); },
 });
 const settingsRoot = () => $('.settings');
+const calendarSettings = createCalendarSettings({ api, settingsForms, getMe: () => me, onEventsChanged: renderCalendar });
 const listsView = createListsView({ api, settingsForms, getMe: () => me });
 const kioskInput = createKioskInput({
   enabled: () => !!me?.device && !me.user && !$('#app').hidden,
@@ -138,28 +139,7 @@ async function loadSettings(sections = ['release', 'weather', 'display', 'feeds'
       const values = { '#dim-form': { dimEnabled: !!me.household.dimEnabled, dimStart: me.household.dimStart || '21:00', dimEnd: me.household.dimEnd || '07:00' }, '#theme-form': { theme: me.household.theme || 'green' }, '#week-start-form': { weekStartsOn: me.household.weekStartsOn } };
       for (const [selector, entries] of Object.entries(values)) { const form = $(selector); if (!editableSettings(form)) continue; for (const [name, value] of Object.entries(entries)) { const field = form.elements[name]; if (field.type === 'checkbox') field.checked = value; else field.value = value; } settingsForms.mark(form); }
     }],
-    feeds: ['#calendar-feeds', async () => {
-      const feeds = await api('/api/calendar/feeds'); feedCatalog = feeds;
-      const root = $('#calendar-feeds');
-      if (!$('#calendar-status-refresh')) { const button = document.createElement('button'); button.id = 'calendar-status-refresh'; button.type = 'button'; button.textContent = 'Refresh connections'; button.onclick = () => settingsAction(button, async () => { await renderCalendar(); await loadSettings(['feeds']); }); root.before(button); }
-      // Keep each existing editor while it has a draft or a save in flight.
-      const old = new Map($$('[data-feed-row]', root).map(row => [Number(row.dataset.feedRow), row]));
-      for (const [index, feed] of feeds.entries()) {
-        let row = old.get(feed.id), form = row && $('form', row);
-        if (!row || editableSettings(form)) {
-          const focusedName = form?.contains(document.activeElement) ? document.activeElement.name : '';
-          const open = row && $('details', row).open;
-          const next = document.createElement('div'); next.className = 'feed-order-row'; next.dataset.feedRow = feed.id;
-           next.innerHTML = `<span class="feed-order-controls"><button type="button" data-feed-move="${feed.id}" data-direction="up" ${index ? '' : 'disabled'} aria-label="Move ${escapeAttribute(feed.name)} calendar up">↑</button><button type="button" data-feed-move="${feed.id}" data-direction="down" ${index === feeds.length - 1 ? 'disabled' : ''} aria-label="Move ${escapeAttribute(feed.name)} calendar down">↓</button></span><div class="calendar-feed-content"><details ${open ? 'open' : ''}><summary class="calendar-feed-summary"><span class="calendar-feed-name">${escape(feed.name)}</span><span class="calendar-source-badge">Public iCal</span><span class="calendar-enabled-badge">${feed.enabled ? 'Enabled' : 'Paused'}</span></summary><form class="settings-form feed-edit" data-feed-edit="${feed.id}"><label>Name<input name="name" maxlength="80" value="${escapeAttribute(feed.name)}" required></label><label>Replacement iCal URL<input name="url" type="url" maxlength="4096" autocomplete="off" placeholder="Leave blank to keep current URL"></label><label>Color<input name="color" type="color" value="${escapeAttribute(feed.color)}" required></label><label class="check-label"><input name="enabled" type="checkbox" ${feed.enabled ? 'checked' : ''}> Enabled</label><button>Save calendar</button></form><button type="button" data-delete-feed="${feed.id}" data-name="${escapeAttribute(feed.name)}">Delete calendar</button></details><p class="connection-status"></p></div>`;
-          row?.replaceWith(next); row = next;
-          if(focusedName)$('form',next).elements.namedItem(focusedName)?.focus();
-        }
-        $('.connection-status', row).textContent = connectionStatus(feed.status);
-        root.append(row); old.delete(feed.id);
-      }
-      for (const row of old.values()) if (editableSettings($('form', row))) row.remove();
-       $('.empty', root)?.remove(); if (!feeds.length && !root.children.length) root.innerHTML = empty('No public iCal feeds added yet.');
-    }],
+    feeds: ['#calendar-feeds', async () => { await calendarSettings.load(); }],
     tasks: ['#routine-order', async () => {
       const results = await Promise.allSettled([api('/api/routines'), api('/api/chores'), api('/api/routines/history'), api('/api/chores/history')]);
       if (results[0].status === 'fulfilled') { routineCatalog = results[0].value; $('#routine-order').innerHTML = itemEditor(routineCatalog, 'routine'); }
@@ -258,40 +238,9 @@ function setupSettingsTabs() {
   const weatherNotice = $('[data-settings-load="weather"]'); if (weatherNotice) weatherPanel.prepend(weatherNotice);
   for (const [id, , selector] of categories) { const panel = $(selector).closest('.settings-panel'); panel.dataset.settingsCategory = id; panel.id = `settings-panel-${id}`; panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', `settings-tab-${id}`); }
   const integrations = document.createElement('section'); integrations.className = 'settings-panel'; integrations.id = 'settings-panel-integrations'; integrations.dataset.settingsCategory = 'integrations'; integrations.setAttribute('role', 'tabpanel'); integrations.setAttribute('aria-labelledby', 'settings-tab-integrations');
-  integrations.innerHTML = `
-    <h3>Integrations</h3>
-    <div id="integrations-grid" class="integrations-grid">
-      <section id="calendar-integration" class="integration-card" aria-labelledby="calendar-integration-title">
-        <div class="integration-card-heading">
-          <div><h4 id="calendar-integration-title">Calendars</h4><p class="muted">Manage the calendars shown in Family Hub. Source calendars are read-only.</p></div>
-          <button type="button" id="calendar-add-button" aria-expanded="false" aria-controls="calendar-type-picker">Add a calendar</button>
-        </div>
-        <div id="calendar-type-picker" class="calendar-type-choices" role="group" aria-label="Choose a calendar source" hidden>
-          <button type="button" data-calendar-type="ical"><span>Public iCal</span><small>Add a public calendar feed</small></button>
-          <button type="button" data-calendar-type="google"><span>Google Calendar</span><small>Connect private calendars</small></button>
-        </div>
-        <section class="calendar-inventory" aria-labelledby="calendar-inventory-title">
-          <div class="calendar-inventory-heading"><h5 id="calendar-inventory-title">Your calendars</h5><p class="muted">Review sources and control which calendars are shown.</p></div>
-          <div class="calendar-inventory-list">
-            <section id="ical-calendar-source" class="calendar-source" aria-labelledby="ical-calendar-title">
-              <h6 id="ical-calendar-title">Public iCal</h6>
-              <p class="muted">Saved feed URLs stay hidden. Enter a new URL when editing to replace one.</p>
-            </section>
-            <section id="google-calendar-integration" class="calendar-source" aria-labelledby="google-calendar-title" hidden>
-              <h6 id="google-calendar-title">Google Calendar</h6>
-              <p class="muted">Connect private calendars with read-only access. Family Hub will not edit Google events.</p>
-              <p id="google-calendar-status" role="status">Loading Google Calendar settings…</p>
-              <p id="google-calendar-credential-source" class="muted"></p>
-              <form id="google-oauth-credentials-form" class="settings-form"><label>Google OAuth client ID<input name="clientId" type="text" maxlength="512" autocomplete="off" required></label><label>Google OAuth client secret<input name="clientSecret" type="password" maxlength="4096" autocomplete="new-password"></label><p class="muted">Leave the secret blank to keep the saved secret. Family Hub encrypts it and never shows it again. App settings override optional host environment values.</p><div class="google-calendar-actions"><button type="submit">Save OAuth credentials</button><button type="button" id="google-oauth-credentials-remove" hidden>Remove saved credentials</button></div></form>
-              <div class="google-calendar-actions"><button type="button" id="google-calendar-connect">Connect Google account</button><button type="button" id="google-calendar-refresh" hidden>Refresh calendar list</button><button type="button" id="google-calendar-disconnect" hidden>Disconnect Google Calendar</button></div>
-              <form id="google-calendar-form" class="settings-form" hidden><fieldset><legend>Calendars to display</legend><div id="google-calendar-options" class="google-calendar-list"></div></fieldset><label class="check-label"><input name="enabled" type="checkbox"> Show selected Google calendars</label><button type="submit">Save calendars</button></form>
-            </section>
-          </div>
-        </section>
-      </section>
-    </div>`;
+  integrations.innerHTML = '<h3>Integrations</h3><div id="integrations-grid" class="integrations-grid"></div>';
   grid.append(integrations);
-  setupCalendarIntegrations();
+  calendarSettings.mount($('#integrations-grid', integrations));
   const tabs = document.createElement('div'); tabs.id = 'settings-tabs'; tabs.className = 'settings-tabs'; tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Settings sections');
   for (const [id, label] of [...categories, ['integrations', 'Integrations']]) { const button = document.createElement('button'); button.id = `settings-tab-${id}`; button.type = 'button'; button.dataset.settingsTab = id; button.setAttribute('role', 'tab'); button.setAttribute('aria-controls', `settings-panel-${id}`); button.textContent = label; button.onclick = () => activateSettingsTab(id); tabs.append(button); }
   tabs.onkeydown = event => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); const buttons = $$('[role="tab"]', tabs), current = buttons.indexOf(document.activeElement); if (current < 0) return; const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (current + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length; if (activateSettingsTab(buttons[next].dataset.settingsTab)) buttons[next].focus(); };
@@ -300,146 +249,6 @@ function setupSettingsTabs() {
   const note = document.createElement('p'); note.className = 'muted'; note.textContent = 'Display, calendar, routine, weather, and member settings apply to the whole household. The header light/dark toggle applies only to this browser.'; tabs.before(note);
   activateSettingsTab('display');
 }
-function setupCalendarIntegrations() {
-  const source = $('#ical-calendar-source'), feedForm = $('#calendar-feed-form'), feeds = $('#calendar-feeds');
-  const note = feedForm?.nextElementSibling?.matches('.muted') ? feedForm.nextElementSibling : null;
-  const notice = $('[data-settings-load="feeds"]'), refreshButton = $('#calendar-status-refresh');
-  for (const node of [notice, refreshButton, feedForm, note, feeds]) if (node) source.append(node);
-  feedForm.hidden = true;
-  source.hidden = false;
-
-  const addButton = $('#calendar-add-button'), picker = $('#calendar-type-picker');
-  const googleSource = $('#google-calendar-integration');
-  addButton.onclick = () => {
-    picker.hidden = !picker.hidden;
-    addButton.setAttribute('aria-expanded', String(!picker.hidden));
-    if (!picker.hidden) picker.querySelector('button')?.focus();
-  };
-  $$('[data-calendar-type]', picker).forEach(button => button.onclick = () => {
-    const selected = button.dataset.calendarType;
-    picker.hidden = true;
-    addButton.setAttribute('aria-expanded', 'false');
-    if (selected === 'ical') {
-      feedForm.hidden = false;
-      feedForm.elements.name.focus();
-      source.scrollIntoView({ block: 'nearest' });
-    } else if (selected === 'google') {
-      googleSource.hidden = false;
-      googleSource.dataset.selected = 'true';
-      googleSource.scrollIntoView({ block: 'nearest' });
-      const target = googleSource.querySelector('#google-calendar-connect:not([hidden])')
-        || googleSource.querySelector('#google-calendar-options input:not(:disabled)')
-        || googleSource.querySelector('#google-oauth-credentials-form input[name="clientId"]:not(:disabled)');
-      target?.focus();
-    }
-  });
-}
-async function setupGoogleCalendarSettings(formMessage = '') {
-  if (me?.user?.role !== 'adult') return;
-  const status = $('#google-calendar-status'), form = $('#google-calendar-form'), credentialsForm = $('#google-oauth-credentials-form');
-  if (!status || !form || !credentialsForm) return;
-  try {
-    const settings = await api('/api/integrations/google-calendar');
-    const googleSection = $('#google-calendar-integration');
-    googleSection.hidden = !settings.connected && settings.oauthSource === 'none' && googleSection.dataset.selected !== 'true';
-    const messages = {
-      unconfigured: 'Enter Google OAuth credentials below and confirm SITE_URL is correct.',
-      needs_key: 'Ask the host owner to set FAMILY_HUB_INTEGRATION_KEY before connecting Google Calendar.',
-      credentials_error: 'Saved Google OAuth credentials cannot be opened. Restore FAMILY_HUB_INTEGRATION_KEY, or disconnect Google Calendar and enter the credentials again.',
-      not_connected: 'Not connected.',
-      disabled: 'Connected. Selected calendars are not shown.',
-      not_checked: 'Connected. Waiting for the first calendar refresh.',
-      ok: 'Connected.',
-      error: 'Google Calendar could not refresh. Check the connection and try again.',
-    };
-    status.textContent = `${messages[settings.state] || 'Google Calendar status is unavailable.'}${settings.error ? ` ${settings.error}` : ''}${settings.lastSuccessAt ? ` Last updated ${new Date(settings.lastSuccessAt).toLocaleString()}.` : ''}`;
-    const credentialSource = $('#google-calendar-credential-source');
-    credentialSource.textContent = `${settings.oauthSource === 'app' ? 'Using credentials saved in Family Hub.' : settings.oauthSource === 'environment' ? 'Using the host environment fallback.' : 'No Google OAuth credentials are configured.'}${settings.connected ? ' Disconnect Google Calendar before changing or removing credentials.' : ''}`;
-    if (editableSettings(credentialsForm)) {
-      credentialsForm.elements.clientId.value = settings.appCredentialsSaved ? settings.oauthClientId : '';
-      credentialsForm.elements.clientSecret.value = '';
-      for (const field of credentialsForm.elements) field.disabled = settings.connected;
-      const removeCredentials = $('#google-oauth-credentials-remove');
-      removeCredentials.hidden = !settings.appCredentialsSaved;
-      removeCredentials.disabled = settings.connected;
-      settingsForms.watch(settingsRoot());
-      settingsForms.mark(credentialsForm, formMessage);
-    }
-    const connect = $('#google-calendar-connect'), refreshButton = $('#google-calendar-refresh'), disconnect = $('#google-calendar-disconnect');
-    connect.hidden = settings.connected;
-    connect.disabled = !settings.configured || !settings.keyReady || settings.state === 'credentials_error';
-    refreshButton.hidden = !settings.connected;
-    disconnect.hidden = !settings.connected;
-    form.hidden = !settings.connected;
-    refreshButton.disabled = !settings.keyReady;
-    if (editableSettings(form)) {
-      const options = $('#google-calendar-options');
-      options.replaceChildren(...settings.calendars.map(calendar => {
-        const label = document.createElement('label'), input = document.createElement('input'), name = document.createElement('span');
-        label.className = 'google-calendar-option'; input.type = 'checkbox'; input.name = 'selectedCalendarId'; input.value = calendar.id; input.checked = calendar.selected;
-        name.textContent = `${calendar.name}${calendar.primary ? ' · Primary' : ''}`;
-        label.append(input, name); return label;
-      }));
-      form.elements.enabled.checked = settings.enabled;
-      form.elements.enabled.disabled = !settings.calendars.length;
-      form.querySelector('button[type="submit"]').disabled = !settings.keyReady || !settings.calendars.length;
-      if (!settings.calendars.length) options.textContent = 'No calendars were found. Refresh the list or reconnect Google Calendar.';
-      settingsForms.watch(settingsRoot());
-      settingsForms.mark(form, formMessage);
-    }
-    credentialsForm.onsubmit = async event => {
-      event.preventDefault();
-      const payload = { clientId: credentialsForm.elements.clientId.value, clientSecret: credentialsForm.elements.clientSecret.value };
-      const saved = await settingsForms.run(credentialsForm, async () => {
-        await api('/api/integrations/google-calendar/credentials', { method: 'PUT', body: JSON.stringify(payload) });
-        credentialsForm.elements.clientSecret.value = '';
-      });
-      if (saved) await setupGoogleCalendarSettings('Saved.');
-    };
-    $('#google-oauth-credentials-remove').onclick = () => settingsAction($('#google-oauth-credentials-remove'), async () => {
-      await api('/api/integrations/google-calendar/credentials', { method: 'DELETE' });
-      await setupGoogleCalendarSettings('Saved.');
-    });
-    connect.onclick = () => settingsAction(connect, async () => {
-      const popup = window.open('about:blank', 'family-hub-google-calendar', 'popup,width=520,height=720');
-      try {
-        const result = await api('/api/integrations/google-calendar/connect', { method: 'POST' });
-        const authorization = new URL(result.authorizationUrl);
-        if (authorization.origin !== 'https://accounts.google.com') throw new Error('Google returned an invalid sign-in address.');
-        if (popup) { googleOAuthPopup = popup; popup.location.href = authorization.href; }
-        else location.assign(authorization.href);
-      } catch (error) { popup?.close(); throw error; }
-    });
-    refreshButton.onclick = () => settingsAction(refreshButton, async () => {
-      await api('/api/integrations/google-calendar/refresh', { method: 'POST' });
-      await setupGoogleCalendarSettings();
-    });
-    disconnect.onclick = () => {
-      if (!confirm('Disconnect Google Calendar? Selected calendars and the saved connection will be removed. Google events will not be changed.')) return;
-      return settingsAction(disconnect, async () => {
-      await api('/api/integrations/google-calendar', { method: 'DELETE' });
-      await setupGoogleCalendarSettings(); await renderCalendar();
-      });
-    };
-    form.onsubmit = async event => {
-      event.preventDefault();
-      const saved = await settingsForms.run(form, async () => {
-        const selectedCalendarIds = $$('input[name="selectedCalendarId"]:checked', form).map(input => input.value);
-        await api('/api/integrations/google-calendar/calendars', { method: 'POST', body: JSON.stringify({ selectedCalendarIds, enabled: form.elements.enabled.checked }) });
-      });
-      if (saved) { await setupGoogleCalendarSettings('Saved.'); await renderCalendar(); }
-    };
-  } catch (error) { status.textContent = `${error.message} Try again.`; }
-}
-window.addEventListener('message', event => {
-  if (event.origin !== location.origin || event.source !== googleOAuthPopup || event.data?.type !== 'family-hub-google-calendar-oauth') return;
-  googleOAuthPopup = null;
-  if (event.data.status === 'success' || event.data.status === 'partial') {
-    setupGoogleCalendarSettings(); renderCalendar();
-  } else if ($('#google-calendar-status')) {
-    $('#google-calendar-status').textContent = event.data.status === 'cancelled' ? 'Google Calendar connection was cancelled.' : 'Google Calendar could not connect. Try again.';
-  }
-});
 function setupAccessGroups() {
   // Retain Access, but separate account actions from maintenance and restoration.
   const panel = $('#settings-panel-access');
@@ -470,11 +279,10 @@ function openView(name) {
   document.body.dataset.view = name;
   $$('.view').forEach(view => view.classList.toggle('mobile-active', view.dataset.view === name));
   $$('[data-nav]').forEach(button => { const active = button.dataset.nav === name; button.classList.toggle('active', active); if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); });
-  if (name === 'settings' && me.user?.role === 'adult') { setupDisplayTitleSetting(); setupRoutineScheduleSetting(); setupSettingsTabs(); addRoutineSettingsTab(); setupTokenBoardSetting(); setupScreensSettings(); setupGoogleCalendarSettings(); listsView.settings(); settingsForms.watch(settingsRoot()); }
+  if (name === 'settings' && me.user?.role === 'adult') { setupDisplayTitleSetting(); setupRoutineScheduleSetting(); setupSettingsTabs(); addRoutineSettingsTab(); setupTokenBoardSetting(); setupScreensSettings(); listsView.settings(); settingsForms.watch(settingsRoot()); }
   if (name === 'lists') listsView.refresh();
   if (name === 'tokens') renderTokens(); if (name === 'calendar') renderTokenBoard(); if (dashboard) renderWeather(); location.hash = name; kioskInput.viewChanged();
 }
-document.addEventListener('click',async e=>{const button=e.target.closest('[data-feed-move]');if(!button)return;const index=feedCatalog.findIndex(feed=>feed.id===+button.dataset.feedMove),swap=index+(button.dataset.direction==='up'?-1:1);if(index<0||swap<0||swap>=feedCatalog.length)return;const ids=feedCatalog.map(feed=>feed.id);[ids[index],ids[swap]]=[ids[swap],ids[index]];await settingsAction(button,async()=>{await api('/api/calendar/feed-order',{method:'PUT',body:JSON.stringify({ids})});await Promise.all([loadSettings(['feeds']),renderCalendar()])})});
 let stream;async function refreshCalendar(){me=await api('/api/me');await renderCalendar()}function connectEvents(){stream?.close();stream=new EventSource('/api/events/stream');for(const name of ['tasks','dashboard'])stream.addEventListener(name,refresh);stream.addEventListener('calendar',refreshCalendar);stream.addEventListener('lists',()=>{if(document.body.dataset.view==='lists')listsView.refresh()})}
 
 $('#login-form').onsubmit=async e=>{e.preventDefault();try{await api('/api/login',{method:'POST',body:JSON.stringify(formJson(e.target))});$('#auth-error').textContent='';await load()}catch(error){$('#auth-error').textContent=error.message}};
@@ -498,7 +306,6 @@ document.addEventListener('click',async e=>{
   try{const eventButton=e.target.closest('[data-event]');if(eventButton)showEvent(calendarEvents[+eventButton.dataset.event]);if(e.target.hasAttribute('data-remove-plan'))e.target.parentElement.remove();const nav=e.target.closest('[data-nav]');if(nav)openView(nav.dataset.nav)}catch(error){toast(error.message)}
 });
 document.addEventListener('click',async e=>{const button=e.target.closest('[data-refresh-screen]');if(!button)return;button.disabled=true;try{await setupScreensSettings();toast('Screen preview refreshed.')}catch(error){toast(error.message)}finally{button.disabled=false}});
-document.addEventListener('submit',async e=>{if(!e.target.dataset.feedEdit)return;e.preventDefault();const form=e.target;const saved=await settingsForms.run(form,async()=>{const values=formJson(form);values.enabled=form.elements.enabled.checked;await api(`/api/calendar/feeds/${form.dataset.feedEdit}`,{method:'PATCH',body:JSON.stringify(values)});form.elements.url.value=''});if(saved){await renderCalendar();await loadSettings(['feeds']);const editor=$(`[data-feed-edit="${form.dataset.feedEdit}"]`);if(editor)settingsForms.mark(editor,'Saved.')}});
 document.addEventListener('submit',async e=>{if(!e.target.dataset.memberEdit)return;e.preventDefault();const form=e.target;const saved=await settingsForms.run(form,async()=>{const values=formJson(form);if(!values.email)delete values.email;if(!values.password)delete values.password;await api(`/api/members/${form.dataset.memberEdit}`,{method:'PATCH',body:JSON.stringify(values)});form.elements.email.value='';form.elements.password.value=''});if(saved)await reloadMembers(form.dataset.memberEdit)});
 function showEvent(event){const format=value=>value?new Intl.DateTimeFormat(undefined,value.length===10?{dateStyle:'full'}:{dateStyle:'full',timeStyle:'short'}).format(new Date(value.length===10?`${value}T12:00:00`:value)):'Not specified';openEvent=event;const editable=event.local&&me.user;$('#event-title').textContent=event.title;$('#event-source').textContent=event.source==='ical'?`Calendar feed · ${event.calendar}`:event.source==='google'?`Google Calendar · ${event.calendar}`:'Local reminder · Family Hub';$('#event-start').textContent=format(event.startValue);$('#event-end').textContent=format(event.endValue);$('#edit-reminder').hidden=!editable;$('#delete-reminder').hidden=!editable;$('#event-dialog').showModal()}
 $('#event-dialog').addEventListener('click',event=>{const rect=event.currentTarget.getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)event.currentTarget.close()});
@@ -533,7 +340,6 @@ $('#appearance-dialog').addEventListener('click',event=>{const rect=event.curren
 window.addEventListener('storage',event=>{if(event.key===deviceThemeKey||event.key==='family-hub-theme-mode'||event.key==='family-hub-theme-schedule-override')applyDim()});
 function isDimTime(start,end,date,timezone){if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(start||'')||!/^([01]\d|2[0-3]):[0-5]\d$/.test(end||'')||start===end)return false;const parts=new Intl.DateTimeFormat('en-GB',{timeZone:timezone,hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(date),hour=parts.find(part=>part.type==='hour').value,now=`${hour==='24'?'00':hour}:${parts.find(part=>part.type==='minute').value}`;return start<end?now>=start&&now<end:now>=start||now<end}
 $('#add-plan').onclick=()=>{$('#plans').insertAdjacentHTML('beforeend','<div class="plan-edit"><input aria-label="Plan name"><input aria-label="Plan target"><button data-remove-plan aria-label="Remove plan">×</button></div>')};$('#save-plans').onclick=async()=>{try{const plans=$$('.plan-edit',$('#plans')).map(row=>({name:$('input:first-child',row).value,target:$('input:nth-child(2)',row).value}));await api('/api/plans',{method:'PUT',body:JSON.stringify({plans})});await refresh();toast('Plans saved.')}catch(error){toast(error.message)}};
-$('#calendar-feed-form').onsubmit=async e=>{e.preventDefault();if(await settingsForms.run(e.target,()=>api('/api/calendar/feeds',{method:'POST',body:JSON.stringify(formJson(e.target))}),{reset:true})){await renderCalendar();await loadSettings(['feeds'])}};
 document.addEventListener('click',async e=>{if(e.target.dataset.move!=='routine'&&e.target.dataset.move!=='chore')return;const list=[...$$(`[data-move="${e.target.dataset.move}"][data-direction="up"]`)].map(button=>+button.dataset.id),index=list.indexOf(+e.target.dataset.id),swap=index+(e.target.dataset.direction==='up'?-1:1);if(swap<0||swap>=list.length)return;const ids=list.slice();[ids[index],ids[swap]]=[ids[swap],ids[index]];try{await api(`/api/${e.target.dataset.move}-order`,{method:'PUT',body:JSON.stringify({ids})});await Promise.all([refresh(),loadSettings(['tasks'])])}catch(error){toast(error.message)}});
 $('#setup-new').onclick=()=>{$('#setup-account').hidden=false;$('#setup-new').hidden=true};$('#setup-account').onsubmit=async e=>{e.preventDefault();try{const response=await fetch('/api/setup/account',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':'1'},body:JSON.stringify(formJson(e.target))});const body=await response.json().catch(()=>({}));if(!response.ok)throw new Error(body.error||'Family Hub could not be created.');$('#auth-error').textContent='';await load()}catch(error){$('#auth-error').textContent=error.message}};
 $('#setup-restore').onclick=()=>$('#setup-backup').click();$('#setup-backup').onchange=async e=>{const file=e.target.files?.[0];e.target.value='';if(!file)return;try{const response=await fetch('/api/setup/restore',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-CSRF-Token':'1'},body:file});const body=await response.json().catch(()=>({}));if(!response.ok)throw new Error(body.error||'Choose a Family Hub backup file.');$('#auth-error').textContent='Backup restored. Sign in after Family Hub restarts.';for(let attempt=0;attempt<20;attempt++){await new Promise(resolve=>setTimeout(resolve,500));const setup=await fetch('/api/setup').then(item=>item.ok?item.json():null).catch(()=>null);if(setup&&!setup.needsSetup)return showAuth()}showAuth()}catch(error){$('#auth-error').textContent=error.message}};

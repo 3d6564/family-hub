@@ -30,8 +30,9 @@ connect one Google account and select the calendars to display.
    save them. Family Hub encrypts the client secret with
    `FAMILY_HUB_INTEGRATION_KEY`; it never shows the saved secret again.
    App-stored values take priority over optional environment fallback values.
-7. Connect the Google account. Select one or more calendars and enable the
-   connection. If you change or remove OAuth credentials later, disconnect
+7. Connect the Google account. In the calendar settings dialog, add the calendars
+   you want to show. Set each calendar's enabled state and color in the saved
+   calendar list. If you change or remove OAuth credentials later, disconnect
    Google Calendar first.
 
 For host-managed setup, `GOOGLE_OAUTH_CLIENT_ID` and
@@ -44,8 +45,11 @@ refresh token. It keeps access tokens in memory, refreshes them on the server,
 and sends normalized event data to signed-in household devices and paired
 displays. It does not return OAuth credentials to a browser or wall display.
 
-Disabling the connection keeps its account settings. Disconnecting removes the
-stored connection and selected calendars, but keeps OAuth client settings.
+Disabling a calendar keeps its saved settings. Removing a Google calendar from
+the saved list removes it from Family Hub only; it does not change Google. The
+Google account remains connected while other saved calendars use it.
+Disconnecting removes the stored connection and saved calendars, but keeps OAuth
+client settings.
 Backups include the encrypted client secret and refresh token, not the encryption
 key. Keep the key with your other recovery material.
 

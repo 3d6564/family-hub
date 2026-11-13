@@ -574,6 +574,39 @@ export function createApp(db, dependencies = {}) {
     const feeds = db.prepare('SELECT id,name,color,enabled,sort_order,created_at,updated_at,1 configured FROM calendar_feeds WHERE household_id=? ORDER BY sort_order,id').all(req.auth.household_id);
     res.json(feeds.map((feed) => ({ ...feed, status: { ...(calendarAttempts.get(req.auth.household_id)?.get(feed.id) || { state: 'not_checked', lastSuccessAt: null, lastAttemptAt: null }), ...(!feed.enabled ? { state: 'disabled' } : {}) } })));
   });
+  app.post('/api/calendar/feeds/test', requireAdult, asyncRoute(async (req, res) => {
+    const householdId = req.auth.household_id;
+    const feedId = req.body.feedId === undefined ? null : Number(req.body.feedId);
+    if (feedId !== null && (!Number.isSafeInteger(feedId) || feedId < 1)) return res.status(400).json({ error: 'Choose a valid calendar.' });
+    const saved = feedId === null ? null : db.prepare('SELECT id,name,url,color FROM calendar_feeds WHERE id=? AND household_id=?').get(feedId, householdId);
+    if (feedId !== null && !saved) return res.status(404).json({ error: 'Calendar not found.' });
+    const suppliedUrl = req.body.url === undefined || req.body.url === '' ? saved?.url : req.body.url;
+    const validation = validateFeedUrl(suppliedUrl);
+    if (!validation.valid) return res.status(400).json({ error: validation.error });
+    const name = text(req.body.name, 80) || saved?.name || 'Calendar';
+    const color = text(req.body.color, 7) || saved?.color || '#4285f4';
+    if (!/^#[0-9a-f]{6}$/i.test(color)) return res.status(400).json({ error: 'Calendar color must be a six-digit hex color.' });
+    const feed = { id: saved?.id || 0, household_id: householdId, name, url: validation.url, color };
+    const tracksSavedStatus = saved && validation.url === saved.url;
+    const now = new Date().toISOString(), previous = tracksSavedStatus && calendarAttempts.get(householdId)?.get(saved.id);
+    try {
+      const from = new Date(), to = new Date(from.getTime() + 31 * 86400000);
+      const events = await (dependencies.fetchFeedEvents || fetchFeedEvents)(feed, from, to);
+      if (tracksSavedStatus) {
+        const statuses = calendarAttempts.get(householdId) || new Map();
+        calendarAttempts.set(householdId, statuses);
+        statuses.set(saved.id, { state: 'ok', lastAttemptAt: now, lastSuccessAt: now });
+      }
+      res.json({ ok: true, eventCount: Array.isArray(events) ? events.length : 0 });
+    } catch {
+      if (tracksSavedStatus) {
+        const statuses = calendarAttempts.get(householdId) || new Map();
+        calendarAttempts.set(householdId, statuses);
+        statuses.set(saved.id, { state: 'error', lastAttemptAt: now, lastSuccessAt: previous?.lastSuccessAt || null });
+      }
+      res.status(502).json({ error: 'Could not connect to this calendar. Check the URL and try again.' });
+    }
+  }));
   app.post('/api/calendar/feeds', requireAdult, (req, res) => {
     const name = text(req.body.name, 80), color = text(req.body.color, 7), validation = validateFeedUrl(req.body.url);
     if (!name) return res.status(400).json({ error: 'Calendar name is required and must be 80 characters or fewer.' });
