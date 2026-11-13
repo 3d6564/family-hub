@@ -116,9 +116,17 @@ test('Google OAuth is adult-bound, stores only encrypted refresh credentials, an
 
   response = await fetch(`${base}/api/integrations/google-calendar/calendars`, {
     method: 'POST', headers: adultHeaders,
-    body: JSON.stringify({ selectedCalendarIds: ['primary'], enabled: true }),
+    body: JSON.stringify({ selectedCalendarIds: ['primary'], enabled: true, calendarOptions: { primary: { enabled: true, color: '#e91e63' } } }),
   });
   assert.equal(response.status, 200);
+  settings = await response.json();
+  assert.equal(settings.calendars[0].color, '#e91e63');
+  assert.equal(settings.calendars[0].enabled, true);
+  response = await fetch(`${base}/api/integrations/google-calendar/refresh`, { method: 'POST', headers: adultHeaders, body: '{}' });
+  settings = await response.json();
+  assert.equal(settings.calendars[0].color, '#e91e63', 'refresh preserves the household color choice');
+  assert.equal(settings.calendars[0].selected, true);
+  assert.equal(calendarListCalls, 2);
   const eventUrl = `${base}/api/calendar/events?from=2026-12-01T00%3A00%3A00.000Z&to=2027-01-01T00%3A00%3A00.000Z`;
   response = await fetch(eventUrl, { headers: { cookie: `family_device_session=${deviceToken}` } });
   let calendarData = await response.json();
@@ -126,12 +134,29 @@ test('Google OAuth is adult-bound, stores only encrypted refresh credentials, an
   assert.deepEqual(calendarData.events.map(event => event.title), ['Private meeting', 'All day']);
   assert.equal(calendarData.events[0].source, 'google');
   assert.equal(calendarData.events[0].calendar, 'Private family calendar');
-  assert.equal(calendarData.events[0].color, '#336699');
+  assert.equal(calendarData.events[0].color, '#e91e63');
   assert.deepEqual(calendarData.events[1].start, { date: '2026-12-03' });
   assert.equal(JSON.stringify(calendarData).includes('refresh-secret'), false);
   assert.equal(tokenCalls, 1);
   assert.equal(eventCalls, 1);
 
+  response = await fetch(`${base}/api/integrations/google-calendar/calendars`, {
+    method: 'POST', headers: adultHeaders,
+    body: JSON.stringify({ selectedCalendarIds: ['primary'], enabled: false, calendarOptions: { primary: { enabled: false, color: '#e91e63' } } }),
+  });
+  settings = await response.json();
+  assert.equal(settings.calendars[0].selected, true);
+  assert.equal(settings.calendars[0].enabled, false);
+  assert.equal(settings.enabled, false);
+  const disabledEvents = await fetch(`${base}/api/calendar/events?from=2027-01-01T00%3A00%3A00.000Z&to=2027-02-01T00%3A00%3A00.000Z`, { headers: { cookie: `family_device_session=${deviceToken}` } });
+  assert.deepEqual(await disabledEvents.json(), { events: [], errors: [] });
+  assert.equal(eventCalls, 1, 'disabled Google calendars are not fetched');
+
+  response = await fetch(`${base}/api/integrations/google-calendar/calendars`, {
+    method: 'POST', headers: adultHeaders,
+    body: JSON.stringify({ selectedCalendarIds: ['primary'], enabled: true, calendarOptions: { primary: { enabled: true, color: '#e91e63' } } }),
+  });
+  assert.equal(response.status, 200);
   failEvents = true;
   const otherMonth = await fetch(`${base}/api/calendar/events?from=2027-01-01T00%3A00%3A00.000Z&to=2027-02-01T00%3A00%3A00.000Z`, { headers: { cookie: `family_device_session=${deviceToken}` } });
   calendarData = await otherMonth.json();

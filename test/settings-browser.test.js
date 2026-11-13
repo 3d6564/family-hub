@@ -71,7 +71,7 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     if (route === '/api/integrations/google-calendar/connect') { googleConnects += 1; return json({ authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=sample-client' }); }
     if (route === '/api/integrations/google-calendar/calendars' && req.method === 'POST') {
       googleSaves += 1;
-      googleCalendar = { ...googleCalendar, enabled: body.enabled, selectedCalendarIds: body.selectedCalendarIds, calendars: googleCalendar.calendars.map(calendar => ({ ...calendar, selected: body.selectedCalendarIds.includes(calendar.id) })), state: body.enabled ? 'ok' : 'disabled' };
+      googleCalendar = { ...googleCalendar, enabled: body.enabled, selectedCalendarIds: body.selectedCalendarIds, calendars: googleCalendar.calendars.map(calendar => ({ ...calendar, ...(body.calendarOptions?.[calendar.id] || {}), selected: body.selectedCalendarIds.includes(calendar.id) })), state: body.enabled ? 'ok' : 'disabled' };
       return json(googleCalendar);
     }
     if (route === '/api/integrations/google-calendar/refresh' && req.method === 'POST') return json(googleCalendar);
@@ -101,8 +101,12 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
       weather = { ...weather, ...body }; delete weather.keys;
       return json(weather);
     }
-    if (route === '/api/calendar/feeds') return json(feeds);
-    if (route === '/api/calendar/feeds/1' && req.method === 'PATCH') { feeds = feeds.map(feed => ({ ...feed, ...body })); return json({ ok: true }); }
+    if (route === '/api/calendar/feeds' && req.method === 'GET') return json(feeds);
+    if (route === '/api/calendar/feeds' && req.method === 'POST') { const feed = { id: Math.max(0, ...feeds.map(item => item.id)) + 1, ...body, enabled: 1, status: { state: 'not_checked' } }; feeds.push(feed); return json(feed, 201); }
+    if (route === '/api/calendar/feeds/test' && req.method === 'POST') return json({ ok: true, eventCount: 2 });
+    if (route.match(/^\/api\/calendar\/feeds\/\d+$/) && req.method === 'PATCH') { const id = Number(route.split('/').at(-1)); feeds = feeds.map(feed => feed.id === id ? { ...feed, ...body } : feed); return json({ ok: true }); }
+    if (route.match(/^\/api\/calendar\/feeds\/\d+$/) && req.method === 'DELETE') { const id = Number(route.split('/').at(-1)); feeds = feeds.filter(feed => feed.id !== id); res.writeHead(204); return res.end(); }
+    if (route === '/api/calendar/feed-order' && req.method === 'PUT') { feeds = body.ids.map(id => feeds.find(feed => feed.id === id)).filter(Boolean); return json({ ok: true }); }
     if (route === '/api/devices') return json(screens);
     if (route === '/api/screens/pair') { pairingRequests.push(body); return failScreenPair ? json({ error: 'Sample code expired. Enter the new code.' }, 400) : json({ ok: true }); }
     if (route === '/api/devices/3' && req.method === 'DELETE') { screenDeletes += 1; screens = []; res.writeHead(204); return res.end(); }
@@ -139,7 +143,7 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     if (message.id) { const request = pending.get(message.id); pending.delete(message.id); if (message.error) request.reject(new Error(message.error.message)); else request.resolve(message.result); }
     if (message.method === 'Page.javascriptDialogOpening') { dialogs.push(message.params.message); send('Page.handleJavaScriptDialog', { accept: acceptDialog }).catch(() => {}); }
     if (message.method === 'Emulation.virtualTimeBudgetExpired') { virtualBudgetDone?.(); virtualBudgetDone = undefined; }
-    if (message.method === 'Runtime.exceptionThrown') exceptions.push(message.params.exceptionDetails.text);
+    if (message.method === 'Runtime.exceptionThrown') exceptions.push(message.params.exceptionDetails.exception?.description || message.params.exceptionDetails.text);
   });
   await send('Page.enable'); await send('Runtime.enable');
   const evaluate = async expression => {
@@ -157,7 +161,7 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   const tab = name => click(`[data-settings-tab="${name}"]`);
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/#settings` });
-  await until(() => evaluate('!!document.querySelector("#settings-tab-screens")'));
+  await until(() => evaluate('!!document.querySelector("#settings-tab-screens")')).catch(async error => { throw new Error(`${error.message} ${exceptions.join('; ')} ${await evaluate('document.body.innerText.slice(0,500)')}`); });
 
   await t.test('desktop places appearance, mode, and settings at the rail bottom; mobile keeps header controls', async () => {
     await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
@@ -214,13 +218,13 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     await click('#calendar-add-button');
     assert.equal(await evaluate('document.querySelector("#calendar-type-picker").hidden'), false);
     await click('#calendar-type-picker [data-calendar-type="ical"]');
-    assert.equal(await evaluate('document.querySelector("#calendar-feed-form").hidden'), false);
-    assert.match(await evaluate('document.querySelector("#calendar-feeds").textContent'), /Sample calendar/);
-    assert.match(await evaluate('document.querySelector("#calendar-feeds [data-feed-row]").textContent'), /Enabled/);
+    assert.equal(await evaluate('document.querySelector("#ical-calendar-source").hidden'), false);
+    assert.match(await evaluate('document.querySelector("#calendar-inventory").textContent'), /Sample calendar/);
+    assert.match(await evaluate('document.querySelector("#calendar-inventory").textContent'), /Enabled/);
     await fill('#calendar-feed-form [name=name]', 'Another sample calendar');
     await fill('#calendar-feed-form [name=url]', 'https://calendar.example/sample.ics');
     await evaluate('document.querySelector("#calendar-feed-form").requestSubmit()');
-    await until(() => evaluate('document.querySelector("#calendar-feed-form .form-status").textContent === "Saved."'));
+    await until(() => evaluate('document.querySelector("#calendar-inventory").textContent.includes("Another sample calendar")'));
     await tab('weather');
     await fill('[name=weatherLocation]', 'Draft city');
     assert.equal(await evaluate('document.querySelector("[name=weatherLocation]").value'), 'Draft city');
@@ -315,9 +319,9 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     await until(() => evaluate('document.querySelector("[data-member-edit=\\"2\\"] .form-status").textContent === "Saved."'));
     assert.equal(await evaluate('document.querySelector("[data-member-edit=\\"1\\"] [name=name]").value'), 'Unsaved adult name');
     acceptDialog = true; await tab('calendars'); acceptDialog = false;
-    await click('[data-delete-feed]');
+    await click('[aria-label="Remove Sample calendar from Family Hub"]');
     assert.match(dialogs.at(-1), /Sample calendar/);
-    assert.equal(feeds.length, 1);
+    assert.equal(feeds.length, 2);
   });
 
   await t.test('Access groups are separated and roadmap cards and update checks are absent', async () => {
@@ -340,10 +344,10 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     assert.equal(await evaluate('[...document.querySelector("#integrations-grid").children].map(card=>card.id).join(",")'), 'calendar-integration,anylist-integration');
     assert.equal(await evaluate('[...document.querySelectorAll("#integrations-grid > .integration-card")].length'), 2);
     await click('#calendar-add-button');
-    assert.equal(await evaluate('document.querySelector("#calendar-add-button").getAttribute("aria-expanded")'), 'true');
+    assert.equal(await evaluate('document.querySelector("#calendar-type-picker").hidden'), false);
     assert.deepEqual(await evaluate('[...document.querySelectorAll("#calendar-type-picker [data-calendar-type]")].map(button=>button.dataset.calendarType)'), ['ical', 'google']);
     await click('#calendar-type-picker [data-calendar-type="google"]');
-    assert.equal(await evaluate('document.querySelector("#calendar-add-button").getAttribute("aria-expanded")'), 'false');
+    assert.equal(await evaluate('document.querySelector("#calendar-type-picker").hidden'), true);
     assert.equal(await evaluate('document.querySelector("#google-calendar-integration").hidden'), false);
     assert.equal(await evaluate('document.querySelector("#google-calendar-status").textContent'), 'Not connected.');
     assert.equal(await evaluate('document.querySelector("#google-calendar-connect").disabled'), false);
@@ -352,7 +356,7 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     await fill('#google-oauth-credentials-form [name=clientSecret]', 'app-client-secret');
     assert.equal(googleCredentialSaves, 0);
     await click('#google-oauth-credentials-form button[type=submit]');
-    await until(() => evaluate('document.querySelector("#google-oauth-credentials-form .form-status").textContent === "Saved."'));
+    await until(() => googleCredentialSaves === 1);
     assert.equal(googleCredentialSaves, 1);
     assert.equal(googleOAuthSecret, 'app-client-secret');
     assert.equal(await evaluate('document.querySelector("#google-oauth-credentials-form [name=clientId]").value'), 'app-client-id');
@@ -372,13 +376,14 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     await evaluate('window.dispatchEvent(new MessageEvent("message",{origin:location.origin,source:window.__googlePopup,data:{type:"family-hub-google-calendar-oauth",status:"success"}}))');
     await until(() => evaluate('!document.querySelector("#google-calendar-form").hidden && document.querySelector("#google-calendar-options").textContent.includes("Private family calendar")'));
     assert.match(await evaluate('document.querySelector("#google-calendar-options").textContent'), /Primary/);
-    await click('[name="selectedCalendarId"]');
-    await click('#google-calendar-form [name="enabled"]');
+    await click('[name="newCalendar"]');
     await click('#google-calendar-form button[type="submit"]');
-    await until(() => evaluate('document.querySelector("#google-calendar-form .form-status").textContent === "Saved."'));
+    await until(() => googleSaves === 1);
     assert.equal(googleSaves, 1);
     assert.deepEqual(googleCalendar.selectedCalendarIds, ['primary']);
     assert.equal(googleCalendar.enabled, true);
+    assert.equal(googleCalendar.calendars[0].enabled, true);
+    assert.equal(await evaluate('document.querySelector("#calendar-inventory").textContent.includes("Private family calendar")'), true);
     for (const width of [390, 1440]) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
       assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false, `Google Calendar settings overflow at ${width}px`);

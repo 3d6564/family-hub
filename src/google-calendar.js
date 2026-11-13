@@ -114,6 +114,10 @@ function boundedId(value, max = 1024) {
   return typeof value === 'string' && value.length > 0 && value.length <= max ? value : '';
 }
 
+function validColor(value) {
+  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value);
+}
+
 function temporal(value) {
   if (typeof value?.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.date)) {
     try { if (new Date(`${value.date}T00:00:00Z`).toISOString().slice(0, 10) === value.date) return { date: value.date }; } catch {}
@@ -127,7 +131,7 @@ export function normalizeGoogleEvent(event, calendar) {
   if (!responseObject(event) || event.status === 'cancelled' || !boundedId(event.id)) return null;
   const start = temporal(event.start), end = temporal(event.end);
   if (!start) return null;
-  const color = /^#[0-9a-f]{6}$/i.test(calendar.color || '') ? calendar.color : '#4285f4';
+  const color = validColor(calendar.displayColor) ? calendar.displayColor : validColor(calendar.color) ? calendar.color : '#4285f4';
   return {
     id: `google:${calendar.id}:${event.id}`,
     title: safeText(event.summary, 500) || '(Untitled)',
@@ -331,6 +335,7 @@ export function createGoogleCalendarConnector(db, options = {}) {
   function settings(householdId) {
     const row = rowFor(householdId), calendars = row ? readJsonArray(row.calendars_json) : [];
     const selectedIds = row ? readJsonArray(row.selected_calendar_ids_json).filter(id => typeof id === 'string') : [];
+    const selected = new Set(selectedIds);
     const oauth = oauthSource(householdId), encryptionReady = keyReady(), connected = !!row;
     const configured = oauth.credentialsConfigured && !!base;
     const credentialsReady = oauthReady(householdId);
@@ -343,7 +348,12 @@ export function createGoogleCalendarConnector(db, options = {}) {
       keyReady: encryptionReady,
       connected,
       enabled: !!row?.enabled,
-      calendars: calendars.map(calendar => ({ ...calendar, selected: selectedIds.includes(calendar.id) })),
+      calendars: calendars.map(calendar => ({
+        ...calendar,
+        color: validColor(calendar.displayColor) ? calendar.displayColor : calendar.color,
+        selected: selected.has(calendar.id),
+        enabled: selected.has(calendar.id) && (typeof calendar.enabled === 'boolean' ? calendar.enabled : !!row?.enabled),
+      })),
       selectedCalendarIds: selectedIds,
       state,
       lastAttemptAt: row?.last_attempt_at || null,
@@ -438,17 +448,28 @@ export function createGoogleCalendarConnector(db, options = {}) {
   async function refreshCatalog(householdId) {
     const row = rowFor(householdId);
     if (!row) throw new GoogleCalendarError('Connect Google Calendar first.', 409);
-    const calendars = await listCalendars(householdId);
-    const valid = new Set(calendars.map(calendar => calendar.id));
-    const selected = readJsonArray(row.selected_calendar_ids_json).filter(id => valid.has(id)).slice(0, MAX_CALENDARS);
-    saveCalendars(householdId, calendars, selected, !!row.enabled && selected.length > 0);
+    const previous = new Map(readJsonArray(row.calendars_json).map(calendar => [calendar.id, calendar]));
+    const previousSelected = readJsonArray(row.selected_calendar_ids_json);
+    const remoteCalendars = await listCalendars(householdId);
+    const valid = new Set(remoteCalendars.map(calendar => calendar.id));
+    const selected = previousSelected.filter(id => valid.has(id)).slice(0, MAX_CALENDARS);
+    const calendars = remoteCalendars.map(calendar => {
+      const old = previous.get(calendar.id);
+      return {
+        ...calendar,
+        ...(validColor(old?.displayColor) ? { displayColor: old.displayColor } : {}),
+        enabled: selected.includes(calendar.id) && (typeof old?.enabled === 'boolean' ? old.enabled : !!row.enabled),
+      };
+    });
+    const enabled = calendars.some(calendar => selected.includes(calendar.id) && calendar.enabled);
+    saveCalendars(householdId, calendars, selected, enabled);
     db.prepare('UPDATE google_calendar_connections SET last_error=NULL,last_attempt_at=?,updated_at=CURRENT_TIMESTAMP WHERE household_id=?')
       .run(new Date().toISOString(), householdId);
     notify(householdId);
     return settings(householdId);
   }
 
-  function configure(householdId, selectedIds, enabled) {
+  function configure(householdId, selectedIds, enabled, calendarOptions) {
     const row = rowFor(householdId);
     if (!row) throw new GoogleCalendarError('Connect Google Calendar before selecting calendars.', 409);
     const calendars = readJsonArray(row.calendars_json);
@@ -457,7 +478,29 @@ export function createGoogleCalendarConnector(db, options = {}) {
     }
     if (enabled && !selectedIds.length) throw new GoogleCalendarError('Select at least one calendar before enabling Google Calendar.', 400);
     if (selectedIds.some(id => !calendars.some(calendar => calendar.id === id))) throw new GoogleCalendarError('Select calendars from the available Google calendar list.', 400);
-    saveCalendars(householdId, calendars, selectedIds, enabled);
+    if (calendarOptions !== undefined && (!responseObject(calendarOptions) || Object.keys(calendarOptions).length > MAX_CALENDARS)) {
+      throw new GoogleCalendarError('Choose valid Google calendar settings.', 400);
+    }
+    const oldSelected = new Set(readJsonArray(row.selected_calendar_ids_json));
+    const options = calendarOptions || {};
+    const optionIds = Object.keys(options);
+    if (optionIds.some(id => !calendars.some(calendar => calendar.id === id))) throw new GoogleCalendarError('Choose settings for available Google calendars only.', 400);
+    const updatedCalendars = calendars.map(calendar => {
+      const option = options[calendar.id];
+      if (option !== undefined && (!responseObject(option) || Object.keys(option).some(key => !['enabled', 'color'].includes(key)))) {
+        throw new GoogleCalendarError('Choose valid Google calendar settings.', 400);
+      }
+      if (option?.enabled !== undefined && typeof option.enabled !== 'boolean') throw new GoogleCalendarError('Choose whether each Google calendar is enabled.', 400);
+      if (option?.color !== undefined && option.color !== null && !validColor(option.color)) throw new GoogleCalendarError('Calendar color must be a six-digit hex color.', 400);
+      const selected = selectedIds.includes(calendar.id);
+      const oldEnabled = typeof calendar.enabled === 'boolean' ? calendar.enabled : !!row.enabled && oldSelected.has(calendar.id);
+      const next = { ...calendar, enabled: selected && (option?.enabled ?? (calendarOptions === undefined ? enabled : oldEnabled)) };
+      if (option?.color === null) delete next.displayColor;
+      else if (validColor(option?.color)) next.displayColor = option.color;
+      return next;
+    });
+    const anyEnabled = updatedCalendars.some(calendar => selectedIds.includes(calendar.id) && calendar.enabled);
+    saveCalendars(householdId, updatedCalendars, selectedIds, anyEnabled);
     clearEvents(householdId);
     notify(householdId);
     return settings(householdId);
@@ -483,9 +526,9 @@ export function createGoogleCalendarConnector(db, options = {}) {
 
   async function readEvents(householdId, from, to) {
     const row = rowFor(householdId);
-    if (!row?.enabled) return { events: [], errors: [] };
+    if (!row) return { events: [], errors: [] };
     const calendars = readJsonArray(row.calendars_json), selected = new Set(readJsonArray(row.selected_calendar_ids_json));
-    const chosen = calendars.filter(calendar => selected.has(calendar.id)).slice(0, MAX_CALENDARS);
+    const chosen = calendars.filter(calendar => selected.has(calendar.id) && (typeof calendar.enabled === 'boolean' ? calendar.enabled : !!row.enabled)).slice(0, MAX_CALENDARS);
     const events = [], errors = [];
     let loaded = false;
     for (const calendar of chosen) {
@@ -583,7 +626,7 @@ export function mountGoogleCalendar(app, connector) {
   app.put('/api/integrations/google-calendar/credentials', requireAdult, route((req, res) => res.json(connector.saveOAuthCredentials(req.auth.household_id, req.body))));
   app.delete('/api/integrations/google-calendar/credentials', requireAdult, route((req, res) => res.json(connector.removeOAuthCredentials(req.auth.household_id))));
   app.post('/api/integrations/google-calendar/connect', requireAdult, route((req, res) => res.json(connector.begin(req.auth.household_id, req.auth))));
-  app.post('/api/integrations/google-calendar/calendars', requireAdult, route((req, res) => res.json(connector.configure(req.auth.household_id, req.body.selectedCalendarIds, req.body.enabled))));
+  app.post('/api/integrations/google-calendar/calendars', requireAdult, route((req, res) => res.json(connector.configure(req.auth.household_id, req.body.selectedCalendarIds, req.body.enabled, req.body.calendarOptions))));
   app.post('/api/integrations/google-calendar/refresh', requireAdult, route(async (req, res) => res.json(await connector.refreshCatalog(req.auth.household_id))));
   app.delete('/api/integrations/google-calendar', requireAdult, route((req, res) => { connector.disconnect(req.auth.household_id); res.status(204).end(); }));
 }

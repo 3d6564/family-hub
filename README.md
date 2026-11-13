@@ -41,7 +41,10 @@ Calendar events appear in start-time order across calendars and local reminders.
 Calendar order breaks ties when events start at the same time. Week-start settings
 are under **Calendars**. Manage public iCal feeds and Google Calendar together
 under **Integrations → Calendars**. Select **Add a calendar** to choose a source
-type. Google setup is in the [Google Calendar guide](docs/google-calendar.md).
+type. Test an iCal feed before saving it. The saved-calendar list shows each
+source's status and lets adults enable it, choose a shared color, or remove it.
+Removing a Google calendar only removes it from Family Hub. Google setup is in
+the [Google Calendar guide](docs/google-calendar.md).
 
 - Preference forms use explicit Save buttons, including token visibility.
   Unsaved edits stay in this browser tab. Leaving a section or the settings view
