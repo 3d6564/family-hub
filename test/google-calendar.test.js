@@ -3,9 +3,46 @@ import assert from 'node:assert/strict';
 import { openDatabase } from '../src/db.js';
 import { createApp } from '../src/app.js';
 import { createSession, digest } from '../src/auth.js';
-import { normalizeGoogleEvent } from '../src/google-calendar.js';
+import { createGoogleCalendarConnector, normalizeGoogleEvent } from '../src/google-calendar.js';
 
 const encryptionKey = 'a'.repeat(64);
+
+test('Google refresh failures give safe recovery instructions without provider details (issue #49)', async (t) => {
+  originEnvironment(t);
+  const db = openDatabase(':memory:');
+  t.after(() => db.close());
+  const home = Number(db.prepare('INSERT INTO households(name,timezone) VALUES (?,?)').run('Test home', 'UTC').lastInsertRowid);
+  const userId = addUser(db, home, 'adult', 'TokenAdult');
+  const token = createSession(db, { householdId: home, userId });
+  const session = db.prepare('SELECT id FROM sessions WHERE token_hash=?').get(digest(token));
+  const options = {
+    key: encryptionKey, clientId: 'test-client', clientSecret: 'test-secret', siteUrl: 'http://localhost:3000',
+    fetch: async url => String(url).includes('oauth2.googleapis.com')
+      ? json({ access_token: 'test-access', refresh_token: 'test-refresh', expires_in: 3600 })
+      : json({ items: [] }),
+  };
+  const connector = createGoogleCalendarConnector(db, options);
+  const authorization = new URL(connector.begin(home, { kind: 'user', role: 'adult', id: session.id, user_id: userId }).authorizationUrl);
+  assert.equal(await connector.complete({ state: authorization.searchParams.get('state'), code: 'test-code' }), 'success');
+  for (const [error, status, expected] of [
+    ['invalid_grant', 400, /expired or was revoked.*seven days/],
+    ['invalid_client', 401, /rejected the OAuth client credentials/],
+    ['unauthorized_client', 400, /rejected the OAuth client credentials/],
+    ['invalid_grant', 503, /temporarily unavailable/],
+    ['rate_limit', 429, /temporarily unavailable/],
+    ['unknown-private-value', 400, /Check the Google connection settings/],
+  ]) {
+    // A fresh connector reproduces a refresh after restart without an access-token cache.
+    const restarted = createGoogleCalendarConnector(db, {
+      ...options, fetch: async () => json({ error, error_description: 'sensitive-provider-description' }, status),
+    });
+    await assert.rejects(restarted.refreshCatalog(home), failure => {
+      assert.match(failure.message, expected);
+      assert.doesNotMatch(failure.message, /test-secret|test-refresh|sensitive-provider-description|unknown-private-value/);
+      return failure.status === 502;
+    });
+  }
+});
 
 function addUser(db, householdId, role, name) {
   return Number(db.prepare('INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?,?)')

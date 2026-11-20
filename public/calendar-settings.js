@@ -20,6 +20,26 @@ export function createCalendarSettings({ api, settingsForms, getMe, onEventsChan
   let google = null;
   let googleError = '';
   let card, dialog, inventory, feedForm, googleSource, typePicker, typeBack, googlePopup;
+  let dialogTrigger;
+
+  function openEditor() {
+    $('#calendar-overview', card).hidden = true;
+    dialog.hidden = false;
+    card.dataset.editing = 'true';
+  }
+
+  function returnToOverview() {
+    dialog.hidden = true;
+    $('#calendar-overview', card).hidden = false;
+    delete card.dataset.editing;
+  }
+
+  function showConnections(trigger = $('#calendar-manage-google', card)) {
+    showAddDialog();
+    dialogTrigger = trigger;
+    setSource('google');
+    $('#calendar-dialog-title', dialog).textContent = 'Manage Google connection';
+  }
 
   function paletteSelect(value, label) {
     const select = document.createElement('select');
@@ -84,6 +104,11 @@ export function createCalendarSettings({ api, settingsForms, getMe, onEventsChan
         order.append(button);
       }
       row.append(order);
+    } else {
+      const spacer = document.createElement('span');
+      spacer.className = 'calendar-row-order';
+      spacer.setAttribute('aria-hidden', 'true');
+      row.append(spacer);
     }
 
     const main = document.createElement('div');
@@ -139,12 +164,20 @@ export function createCalendarSettings({ api, settingsForms, getMe, onEventsChan
       edit.setAttribute('aria-label', `Edit ${name}`);
       edit.addEventListener('click', () => editFeed(id));
       row.append(edit);
+    } else {
+      const manage = document.createElement('button');
+      manage.type = 'button';
+      manage.className = 'calendar-row-edit';
+      manage.textContent = 'Account';
+      manage.setAttribute('aria-label', `Manage Google connection for ${name}`);
+      manage.addEventListener('click', () => showConnections(manage));
+      row.append(manage);
     }
 
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'calendar-row-remove';
-    remove.textContent = '×';
+      remove.textContent = 'Remove';
     remove.setAttribute('aria-label', `Remove ${name} from Family Hub`);
     remove.addEventListener('click', () => kind === 'ical' ? deleteFeed(remove, id, name) : removeGoogle(remove, id, name));
     row.append(remove);
@@ -184,6 +217,10 @@ export function createCalendarSettings({ api, settingsForms, getMe, onEventsChan
     }
     renderInventory();
     renderGoogleSetup();
+    const connectionStatus = card && $('#calendar-google-summary', card);
+    if (connectionStatus) connectionStatus.textContent = googleError || (google?.connected
+      ? `Google account connected${google.state === 'error' ? ' · Update failed' : ''}`
+      : 'Google account not connected');
     return feeds;
   }
 
@@ -282,12 +319,16 @@ export function createCalendarSettings({ api, settingsForms, getMe, onEventsChan
     } else {
       renderGoogleSetup();
       const target = $('#google-calendar-connect', googlePanel);
-      if (!target.hidden) target.focus();
+      if (!google?.configured) {
+        $('#google-credentials-details', googlePanel).open = true;
+        $('#google-oauth-credentials-form', googlePanel).elements.clientId.focus();
+      } else if (!target.hidden) target.focus();
       else $('#google-calendar-test', googlePanel).focus();
     }
   }
 
   function showAddDialog() {
+    dialogTrigger = $('#calendar-add-button', card);
     feedForm.reset();
     feedForm.dataset.feedEdit = '';
     feedForm.elements.url.required = true;
@@ -300,13 +341,15 @@ export function createCalendarSettings({ api, settingsForms, getMe, onEventsChan
     $('#google-calendar-integration', dialog).hidden = true;
     typePicker.hidden = false;
     typeBack.hidden = true;
-    dialog.showModal();
+    settingsForms.mark(feedForm);
+    openEditor();
     $('[data-calendar-type="ical"]', typePicker).focus();
   }
 
   function editFeed(id) {
     const feed = feeds.find(item => item.id === id);
     if (!feed) return;
+    dialogTrigger = $(`[data-calendar-id="${id}"] .calendar-row-edit`, card);
     feedForm.dataset.feedEdit = String(id);
     feedForm.elements.name.value = feed.name;
     feedForm.elements.url.value = '';
@@ -319,10 +362,10 @@ export function createCalendarSettings({ api, settingsForms, getMe, onEventsChan
     $('#ical-calendar-save', feedForm).textContent = 'Save calendar';
     $('#calendar-dialog-title', dialog).textContent = 'Edit iCal calendar';
     typePicker.hidden = true;
-    typeBack.hidden = false;
+    typeBack.hidden = true;
     $('#ical-calendar-source', dialog).hidden = false;
     $('#google-calendar-integration', dialog).hidden = true;
-    dialog.showModal();
+    openEditor();
     settingsForms.mark(feedForm);
     feedForm.elements.name.focus();
   }
@@ -367,13 +410,11 @@ export function createCalendarSettings({ api, settingsForms, getMe, onEventsChan
       await api(id ? `/api/calendar/feeds/${id}` : '/api/calendar/feeds', { method: id ? 'PATCH' : 'POST', body: JSON.stringify(values) });
     }, { reset: !id });
     if (!saved) return;
-    feedForm.dataset.feedEdit = '';
     await load();
     await onEventsChanged();
-    if (!id) {
-      dialog.close();
-      $('#calendar-add-button', card).focus();
-    }
+    feedForm.dataset.feedEdit = '';
+    returnToOverview();
+    (id ? $(`[data-calendar-id="${id}"] .calendar-row-edit`, card) : dialogTrigger)?.focus();
   }
 
   async function runRowAction(button, work) {
@@ -485,35 +526,50 @@ export function createCalendarSettings({ api, settingsForms, getMe, onEventsChan
     card.className = 'integration-card';
     card.setAttribute('aria-labelledby', 'calendar-integration-title');
     card.innerHTML = `
+      <div id="calendar-overview">
       <div class="integration-card-heading">
-        <div><h4 id="calendar-integration-title">Calendars</h4><p class="muted">Manage saved calendars, colors, and status in one place.</p></div>
-        <button type="button" id="calendar-add-button">Add a calendar</button>
+        <div><h4 id="calendar-integration-title">Calendars</h4><p class="muted">Choose which calendars appear and make each one your own.</p></div>
+        <div class="calendar-header-actions"><button type="button" id="calendar-status-refresh">Refresh</button><button type="button" id="calendar-add-button" class="primary"><svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M10 4v12M4 10h12"/></svg> Add calendar</button></div>
       </div>
-      <button type="button" id="calendar-status-refresh">Refresh status</button>
+      <div class="calendar-view-switch" role="group" aria-label="Calendar settings views"><button type="button" data-calendar-view="calendars" aria-pressed="true">Saved calendars</button><button type="button" data-calendar-view="connections" aria-pressed="false">Account connections</button></div>
       <div id="calendar-inventory" role="list" aria-label="Saved calendars"></div>
-      <dialog id="calendar-config-dialog" class="calendar-config-dialog" aria-labelledby="calendar-dialog-title">
-        <div class="calendar-dialog-heading"><div><p class="eyebrow">CALENDAR SETTINGS</p><h2 id="calendar-dialog-title">Add a calendar</h2></div><button type="button" id="calendar-dialog-close" class="dialog-close" aria-label="Close calendar settings">×</button></div>
+      <div id="calendar-connections" hidden><div class="calendar-connection-card"><div><strong>Google Calendar</strong><p id="calendar-google-summary" role="status">Loading connection…</p></div><button type="button" id="calendar-manage-google">Manage connection</button></div><p class="muted">Each iCal feed has its own private or public URL. Use Edit beside a saved calendar to replace its URL or test its connection. Removing a Google calendar does not disconnect the Google account.</p><button type="button" id="calendar-return-inventory">Back to calendars</button></div>
+      </div>
+      <section id="calendar-config-dialog" class="calendar-editor" aria-labelledby="calendar-dialog-title" hidden>
+        <button type="button" id="calendar-dialog-close" class="calendar-editor-back" aria-label="Back to calendar settings"><span aria-hidden="true">←</span> Back to calendars</button>
+        <div class="calendar-dialog-heading"><div><h3 id="calendar-dialog-title">Add a calendar</h3><p class="muted">Keep everything in view, without changing your source calendars.</p></div></div>
         <div id="calendar-type-picker" class="calendar-type-choices" role="group" aria-label="Choose a calendar type">
-          <button type="button" data-calendar-type="ical"><span>Public iCal</span><small>Add a public calendar feed</small></button>
-          <button type="button" data-calendar-type="google"><span>Google Calendar</span><small>Connect and select calendars</small></button>
+          <button type="button" data-calendar-type="ical"><span class="calendar-type-symbol" aria-hidden="true">↗</span><span>iCal feed</span><small>A private or public calendar link. No Google sign-in required.</small><span class="calendar-type-action">Use a calendar link <span aria-hidden="true">→</span></span></button>
+          <button type="button" data-calendar-type="google"><span class="calendar-type-symbol" aria-hidden="true">G</span><span>Google Calendar</span><small>Connect your Google account and choose calendars to display.</small><span class="calendar-type-action">Connect Google <span aria-hidden="true">→</span></span></button>
         </div>
-        <button type="button" id="calendar-type-back" hidden>Choose another source</button>
-        <section id="ical-calendar-source" class="calendar-config-source" hidden><p class="muted">Saved feed URLs stay hidden. Enter a new URL when editing to replace one.</p><div id="ical-form-slot"></div></section>
+        <button type="button" id="calendar-type-back" hidden>← Change calendar source</button>
+        <section id="ical-calendar-source" class="calendar-config-source" hidden><p class="muted">Add a read-only private or public HTTPS iCal feed. Treat a private URL like a password. Saved URLs stay hidden, including from wall displays. Leave the URL blank when editing to keep it.</p><details class="ical-private-help"><summary>Use a private Google Calendar feed</summary><p>In Google Calendar on a desktop browser, open Settings → choose your calendar → Integrate calendar → Secret address in iCal format. Paste that address below. Do not make your calendar public. Your Google administrator may disable secret addresses.</p><p>Anyone with this address can read the calendar. Reset it in Google Calendar if it is exposed, then replace it here. Updates are read-only and may take time to appear.</p></details><div id="ical-form-slot"></div></section>
         <section id="google-calendar-integration" class="calendar-config-source" hidden aria-labelledby="google-calendar-title">
-          <h3 id="google-calendar-title">Google Calendar</h3>
+          <h4 id="google-calendar-title">Google account</h4>
           <p id="google-calendar-status" role="status">Loading Google Calendar settings…</p>
           <p id="google-calendar-credential-source" class="muted"></p>
-          <form id="google-oauth-credentials-form" class="settings-form"><label>Google OAuth client ID<input name="clientId" type="text" maxlength="512" autocomplete="off" required></label><label>Google OAuth client secret<input name="clientSecret" type="password" maxlength="4096" autocomplete="new-password"></label><p class="muted">Leave the secret blank to keep the saved secret. Family Hub encrypts it and never shows it again.</p><div class="google-calendar-actions"><button type="submit">Save OAuth credentials</button><button type="button" id="google-oauth-credentials-remove" hidden>Remove saved credentials</button></div></form>
+          <details id="google-credentials-details"><summary>OAuth client settings</summary><form id="google-oauth-credentials-form" class="settings-form"><label>Google OAuth client ID<input name="clientId" type="text" maxlength="512" autocomplete="off" required></label><label>Google OAuth client secret<input name="clientSecret" type="password" maxlength="4096" autocomplete="new-password"></label><p class="muted">Leave the secret blank to keep the saved secret. Family Hub encrypts it and never shows it again.</p><div class="google-calendar-actions"><button type="submit">Save OAuth credentials</button><button type="button" id="google-oauth-credentials-remove" hidden>Remove saved credentials</button></div></form></details>
           <div class="google-calendar-actions"><button type="button" id="google-calendar-connect">Connect Google account</button><button type="button" id="google-calendar-test" hidden>Test connection</button><button type="button" id="google-calendar-disconnect" hidden>Disconnect Google account</button></div>
           <form id="google-calendar-form" class="settings-form" hidden><fieldset><legend>Add available calendars</legend><div id="google-calendar-options" class="google-calendar-list"></div></fieldset><button type="submit">Add selected calendars</button></form>
         </section>
-      </dialog>`;
+      </section>`;
     grid.append(card);
     dialog = $('#calendar-config-dialog', card);
     inventory = $('#calendar-inventory', card);
     typePicker = $('#calendar-type-picker', dialog);
     typeBack = $('#calendar-type-back', dialog);
     googleSource = $('#google-calendar-integration', dialog);
+    function selectView(view) {
+      inventory.hidden = view !== 'calendars';
+      $('#calendar-connections', card).hidden = view !== 'connections';
+      $$('[data-calendar-view]', card).forEach(button => button.setAttribute('aria-pressed', String(button.dataset.calendarView === view)));
+    }
+    $$('[data-calendar-view]', card).forEach(button => button.addEventListener('click', () => selectView(button.dataset.calendarView)));
+    $('#calendar-return-inventory', card).addEventListener('click', () => {
+      selectView('calendars');
+      $('[data-calendar-view="calendars"]', card).focus();
+    });
+    $('#calendar-manage-google', card).addEventListener('click', () => showConnections());
 
     const savedList = document.querySelector('#calendar-feeds');
     const savedForm = document.querySelector('#calendar-feed-form');
@@ -523,7 +579,7 @@ export function createCalendarSettings({ api, settingsForms, getMe, onEventsChan
     if (savedForm) {
       feedForm = savedForm;
       $('#ical-form-slot', dialog).append(feedForm);
-      if (oldNote) $('#ical-form-slot', dialog).append(oldNote);
+      oldNote?.remove();
       const oldColor = feedForm.elements.color;
       const colorSelect = paletteSelect(oldColor.value, 'Calendar color');
       colorSelect.name = 'color';
@@ -551,14 +607,14 @@ export function createCalendarSettings({ api, settingsForms, getMe, onEventsChan
       enabledRow.className = 'check-label';
       enabledRow.hidden = true;
       enabledRow.innerHTML = '<input id="ical-calendar-enabled" name="enabled" type="checkbox"> Enabled';
-      colorSelect.before(enabledRow);
+      colorSelect.closest('label').after(enabledRow);
       test.addEventListener('click', () => testFeed(test));
       feedForm.addEventListener('submit', saveFeed);
       feedForm.elements.url.addEventListener('input', () => { $('#ical-calendar-test-status', feedForm).textContent = ''; });
       settingsForms.watch(dialog);
       settingsForms.mark(feedForm);
     }
-    if (notice) card.insertBefore(notice, inventory);
+    if (notice) inventory.before(notice);
 
     $('#calendar-add-button', card).addEventListener('click', showAddDialog);
     $('#calendar-status-refresh', card).addEventListener('click', async event => {
@@ -580,11 +636,13 @@ export function createCalendarSettings({ api, settingsForms, getMe, onEventsChan
       $('[data-calendar-type="ical"]', typePicker).focus();
     });
     $('#calendar-dialog-close', dialog).addEventListener('click', closeDialog);
-    dialog.addEventListener('cancel', event => { event.preventDefault(); closeDialog(); });
-    dialog.addEventListener('click', event => {
-      const rect = dialog.getBoundingClientRect();
-      if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) closeDialog();
-    });
+    dialog.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); closeDialog(); } });
+    const done = document.createElement('button');
+    done.type = 'button';
+    done.className = 'calendar-dialog-done';
+    done.textContent = 'Done';
+    done.addEventListener('click', closeDialog);
+    googleSource.append(done);
 
     const credentialsForm = $('#google-oauth-credentials-form', googleSource);
     credentialsForm.addEventListener('submit', async event => {
@@ -642,6 +700,7 @@ export function createCalendarSettings({ api, settingsForms, getMe, onEventsChan
       if (event.origin !== location.origin || event.source !== googlePopup || event.data?.type !== 'family-hub-google-calendar-oauth') return;
       googlePopup = null;
       if (event.data.status === 'success' || event.data.status === 'partial') {
+        $('#google-credentials-details', googleSource).open = false;
         await load();
         renderGoogleSetup();
       } else setMessage($('#google-calendar-status', googleSource), event.data.status === 'cancelled' ? 'Google Calendar connection was cancelled.' : 'Google Calendar could not connect. Try again.', true);
@@ -653,8 +712,8 @@ export function createCalendarSettings({ api, settingsForms, getMe, onEventsChan
 
   function closeDialog() {
     if (!settingsForms.guard(dialog)) return;
-    dialog.close();
-    $('#calendar-add-button', card).focus();
+    returnToOverview();
+    (dialogTrigger?.isConnected ? dialogTrigger : $('#calendar-add-button', card)).focus();
   }
 
   return { mount, load };

@@ -1,0 +1,206 @@
+/* Settings use a quiet workspace; household palettes still apply to the main app. */
+body[data-view="settings"] {
+  --settings-surface: #fff;
+  --settings-soft: #f8f9fb;
+  --settings-border: #eaecf0;
+  --settings-text: #101828;
+  --settings-muted: #667085;
+  --settings-action: #175cd3;
+  background: var(--settings-surface);
+}
+body.display-dim[data-view="settings"] {
+  --settings-surface: #1e2228;
+  --settings-soft: #272c34;
+  --settings-border: #343a42;
+  --settings-text: #f2f4f7;
+  --settings-muted: #a3a8b0;
+  --settings-action: #84adff;
+}
+body[data-view="settings"] #app > header {
+  background: var(--settings-surface);
+  color: var(--settings-text);
+  border-bottom: 1px solid var(--settings-border);
+  box-shadow: none;
+}
+body[data-view="settings"] #app > header time { font-size: .9rem; font-weight: 500; color: var(--settings-muted); }
+body[data-view="settings"] #app > header button { color: var(--settings-text); background: transparent; border-color: var(--settings-border); }
+body[data-view="settings"] #app > nav { background: var(--settings-surface); border-color: var(--settings-border); }
+body[data-view="settings"] #app > nav button { color: var(--settings-muted); }
+body[data-view="settings"] #app > nav button.active { background: var(--settings-soft); color: var(--settings-text); }
+body[data-view="settings"] #app .layout { width: 100%; max-width: none; margin: 0; padding: 0 0 80px; }
+body[data-view="settings"] .settings {
+  --ink: var(--settings-text);
+  --muted: var(--settings-muted);
+  --line: var(--settings-border);
+  --paper: var(--settings-surface);
+  --bg: var(--settings-soft);
+  --control: var(--settings-surface);
+  --accent: var(--settings-action);
+  --primary-bg: #175cd3;
+  --focus: #84adff;
+  width: 100%; max-width: none; margin: 0; padding: 0;
+  border: 0; border-radius: 0; background: var(--settings-surface); box-shadow: none;
+  color: var(--settings-text); font-size: .9rem; line-height: 1.5;
+}
+.settings .settings-workspace { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 0; align-items: stretch; min-height: calc(100vh - 64px); }
+.settings-navigation { display: flex; flex-direction: column; align-items: stretch; padding: 28px 20px; border-right: 1px solid var(--line); min-width: 0; }
+.settings-navigation > h2 { font-size: 1.15rem; letter-spacing: -.02em; margin: 0; }
+.settings-navigation-description { color: var(--muted); font-size: .8rem; margin: 4px 0 24px; }
+.settings .settings-navigation .settings-tabs { display: flex; flex-direction: column; gap: 4px; margin: 0; border: 0; }
+.settings .settings-tabs button { display: flex; align-items: center; justify-content: flex-start; gap: 12px; min-height: 42px; padding: 9px 12px; border: 0; border-radius: 6px; color: var(--muted); font-size: .9rem; font-weight: 550; text-align: left; background: transparent; box-shadow: none; }
+.settings .settings-tabs button::after { display: none; }
+.settings .settings-tabs button:hover, .settings .settings-tabs button.active { color: var(--ink); background: var(--bg); }
+.settings-tabs button svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; }
+.settings-navigation #identity { margin: auto 0 0; padding: 24px 12px 0; color: var(--muted); font-size: .78rem; overflow-wrap: anywhere; }
+.settings .settings-grid { display: block; padding: 30px 36px 48px; min-width: 0; }
+.settings .settings-panel { max-width: 1120px; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.settings .settings-page-heading { display: block; height: auto; padding: 0 0 24px; margin: 0 0 4px; background: transparent; color: var(--ink); box-shadow: none; border-bottom: 1px solid var(--line); }
+.settings .settings-page-heading h2 { font-size: 1.65rem; font-weight: 650; letter-spacing: -.035em; line-height: 1.3; margin: 0 0 6px; }
+.settings .settings-page-heading p { margin: 0; color: var(--muted); font-size: .95rem; letter-spacing: normal; text-transform: none; }
+.settings .settings-detail-row { display: grid; grid-template-columns: minmax(180px, .85fr) minmax(0, 1.6fr); gap: 36px; align-items: start; padding: 24px 0; border-bottom: 1px solid var(--line); }
+.settings .settings-row-copy h3 { margin: 0 0 4px !important; font-size: .9rem; font-weight: 600; }
+.settings .settings-row-copy p { margin: 0; color: var(--muted); font-size: .85rem; max-width: 280px; }
+.settings .settings-detail-row .settings-form { max-width: 560px; width: 100%; margin: 0; }
+.settings .settings-form { gap: 14px; }
+.settings .settings-form > label, .settings .settings-form .field-row > label { color: var(--ink); font-size: .85rem; font-weight: 500; gap: 6px; }
+.settings input:not([type="checkbox"]), .settings select { min-height: 40px; border: 1px solid #d0d5dd; border-radius: 6px; padding: 8px 12px; background: var(--control); box-shadow: 0 1px 2px #10182805; }
+.settings button { min-height: 38px; border-radius: 6px; padding: 8px 13px; font-size: .85rem; font-weight: 600; box-shadow: 0 1px 2px #10182805; }
+.settings button:hover { border-color: #98a2b3; }
+.settings .settings-form button, .settings .settings-panel > button { width: auto; justify-self: start; min-height: 38px; }
+.settings .primary { background: #175cd3; border-color: #175cd3; color: #fff; }
+.settings input[type="checkbox"] { appearance: none; position: relative; flex: none; width: 34px; height: 20px; min-height: 20px; padding: 0; margin: 0; border: 1px solid var(--line); border-radius: 20px; background: #e4e7ec; cursor: pointer; }
+.settings input[type="checkbox"]::after { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; content: ""; background: #fff; box-shadow: 0 1px 3px #10182825; transition: transform .15s; }
+.settings input[type="checkbox"]:checked { border-color: #175cd3; background: #175cd3; }
+.settings input[type="checkbox"]:checked::after { transform: translateX(14px); }
+.settings input[type="checkbox"]:disabled { cursor: default; opacity: .5; }
+.settings .settings-form .check-label { font-weight: 500; gap: 10px; }
+.settings .form-status { font-size: .8rem; margin: 0; }
+.settings .settings-form button:disabled { opacity: .5; }
+.settings .field-row { gap: 12px; }
+.settings #settings-panel-display > .muted, .settings #settings-panel-routines > .muted,
+.settings #settings-panel-screens > h3:first-of-type, .settings #settings-panel-screens > .muted:first-of-type { display: none; }
+.settings .settings-group { padding: 24px 0; border-color: var(--line); }
+.settings .settings-group h3 { font-size: 1rem; }
+.settings .danger-zone { border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 24px 0; }
+.settings .danger-zone h3, .settings .danger-zone button { color: var(--danger); }
+.settings .integration-card { padding: 24px 0; border: 0; border-radius: 0; background: transparent; }
+.settings #settings-panel-calendars > .integrations-grid { grid-template-columns: minmax(0,1fr); }
+.settings .integration-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin: 0 0 22px; }
+.settings .integration-card-heading h4 { margin: 0 0 4px; font-size: 1rem; font-weight: 600; }
+.settings .integration-card-heading p { margin: 0; font-size: .85rem; }
+.settings .calendar-header-actions { display: flex; flex-wrap: nowrap; gap: 8px; }
+.settings .calendar-header-actions button { min-height: 38px; white-space: nowrap; }
+.settings .calendar-header-actions svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.settings #calendar-status-refresh { min-height: 38px; }
+.settings .calendar-view-switch { display: flex; flex-wrap: wrap; gap: 24px; padding: 0; margin: 0; border-bottom: 1px solid var(--line); }
+.settings .calendar-view-switch button { position: relative; padding: 0 0 13px; border: 0; border-radius: 0; box-shadow: none; background: none; color: var(--muted); }
+.settings .calendar-view-switch button[aria-pressed="true"] { color: var(--settings-action); background: none; border: 0; }
+.settings .calendar-view-switch button[aria-pressed="true"]::after { content: ""; position: absolute; bottom: -1px; left: 0; right: 0; height: 2px; background: currentColor; }
+.settings #calendar-inventory { margin-top: 8px; }
+.settings .calendar-row { grid-template-columns: 30px minmax(140px,1fr) auto auto auto auto; column-gap: 14px; padding: 18px 0; }
+.settings .calendar-row-order { flex-direction: column; gap: 0; }
+.settings .calendar-row-order button { min-height: 22px; height: 22px; min-width: 26px !important; width: 26px; padding: 0; border: 0; box-shadow: none; color: var(--muted); background: transparent; }
+.settings .calendar-row-main { gap: 6px; }
+.settings .calendar-row-name { font-size: .9rem; font-weight: 600; }
+.settings .calendar-row-detail { gap: 6px; font-size: .8rem; }
+.settings .calendar-source-badge { font-size: .7rem; font-weight: 500; padding: 1px 7px; min-height: 22px; background: var(--bg); }
+.settings .calendar-enabled-badge { display: none; }
+.settings .calendar-color-control { font-size: .75rem; gap: 4px; }
+.settings .calendar-color-control select { min-width: 100px; min-height: 36px; padding: 5px 8px; font-size: .8rem; }
+.settings .calendar-enabled-control { gap: 8px; font-size: .8rem; padding-top: 16px; }
+.settings .calendar-row-edit, .settings .calendar-row-remove { width: auto; min-width: 0 !important; padding: 8px 2px; border: 0; background: transparent; box-shadow: none; font-size: .8rem; color: var(--muted); }
+.settings .calendar-row-edit { color: var(--settings-action); }
+.settings .calendar-row-remove:hover { color: var(--danger); }
+.settings .calendar-preferences { padding: 16px 0; border-top: 1px solid var(--line); margin: 0; }
+.settings #settings-panel-calendars:has([data-editing="true"]) > .calendar-preferences { display: none; }
+.settings .calendar-preferences summary { font-size: .85rem; font-weight: 600; cursor: pointer; }
+.settings .calendar-preferences form { padding-top: 20px; max-width: 420px; }
+.settings .calendar-connection-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 22px 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
+.settings .calendar-connection-card button { width: auto; flex: none; }
+.settings .calendar-connection-card p { margin: 4px 0 0; color: var(--muted); }
+.settings .calendar-dialog-done { justify-self: start; }
+.settings #calendar-connections > .muted { max-width: 640px; font-size: .85rem; margin: 18px 0; }
+.settings .calendar-editor { width: 100%; margin: 0; padding: 0; }
+.settings .calendar-editor-back { padding: 0; margin-bottom: 24px; color: var(--muted); border: 0; background: transparent; box-shadow: none; }
+.settings .calendar-dialog-heading { margin-bottom: 24px; }
+.settings .calendar-dialog-heading h3 { font-size: 1.2rem; margin: 0 0 6px; letter-spacing: -.02em; }
+.settings .calendar-dialog-heading p { margin: 0; font-size: .85rem; }
+.settings .calendar-type-choices { grid-template-columns: repeat(2, minmax(0,1fr)); gap: 16px; }
+.settings .calendar-type-choices button { display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 12px; min-height: 220px; padding: 22px; background: var(--paper); text-align: left; }
+.settings .calendar-type-choices button > span:not(.calendar-type-action) { font-size: 1rem; }
+.settings .calendar-type-choices button small { font-size: .85rem; font-weight: 400; line-height: 1.5; }
+.settings .calendar-type-symbol { display: flex; justify-content: center; align-items: center; width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); }
+.settings .calendar-type-action { display: flex; gap: 8px; align-items: center; color: var(--settings-action); margin-top: auto; font-size: .85rem; }
+.settings .calendar-config-source { max-width: 740px; }
+.settings #calendar-type-back { margin-bottom: 20px; border: 0; padding-left: 0; box-shadow: none; color: var(--settings-action); }
+.settings .calendar-config-source > .muted { max-width: 650px; font-size: .85rem; }
+.settings .ical-private-help { padding: 14px 16px; margin: 20px 0; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); font-size: .85rem; }
+.settings .ical-private-help summary { cursor: pointer; font-weight: 600; }
+.settings #calendar-feed-form { display: grid; grid-template-columns: 1fr; gap: 18px; margin: 24px 0 0; max-width: 560px; }
+.settings #calendar-feed-form > label { min-width: 0; }
+.settings #calendar-feed-form > label:nth-child(2) { grid-column: auto; }
+.settings .calendar-dialog-actions { display: flex; justify-content: flex-end; padding-top: 18px; border-top: 1px solid var(--line); gap: 8px; }
+.settings .calendar-dialog-actions button { flex: none; width: auto; }
+.settings #ical-calendar-test { margin-right: auto; }
+.settings #ical-calendar-save { color: #fff; background: #175cd3; border-color: #175cd3; }
+.settings #google-calendar-integration { display: grid; gap: 18px; }
+.settings #google-calendar-integration h4 { margin: 0; font-size: 1rem; }
+.settings #google-calendar-integration p { margin: 0; font-size: .85rem; }
+.settings #google-credentials-details { padding: 18px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.settings #google-credentials-details summary { cursor: pointer; font-weight: 600; font-size: .85rem; }
+.settings #google-credentials-details form { padding-top: 18px; }
+.settings .google-calendar-actions button { flex: none; width: auto; }
+.settings #google-calendar-form fieldset { padding: 16px; border: 1px solid var(--line); border-radius: 6px; }
+.settings .google-calendar-list { border: 0; padding: 0; }
+.settings .google-calendar-option { padding: 10px 0; font-size: .85rem; }
+.settings #anylist-integration { grid-column: 1 / -1; }
+.settings #anylist-integration .settings-form { max-width: 520px; margin-top: 24px; }
+.settings .screen-card { border-color: var(--line); border-radius: 8px; background: var(--paper); }
+@media (min-width: 1500px) {
+  .settings .settings-workspace { grid-template-columns: 260px minmax(0,1fr); }
+  .settings .settings-grid { padding: 36px 48px 60px; }
+}
+@media (max-width: 1100px) {
+  .settings .settings-workspace { grid-template-columns: 200px minmax(0,1fr); }
+  .settings-navigation { padding: 24px 12px; }
+  .settings .settings-grid { padding: 26px 24px; }
+  .settings .settings-detail-row { grid-template-columns: minmax(150px,.8fr) minmax(0,1.4fr); gap: 24px; }
+  .settings .calendar-row { column-gap: 8px; grid-template-columns: 26px minmax(90px,1fr) auto auto auto auto; }
+}
+@media (max-width: 900px) {
+  .settings .settings-workspace { grid-template-columns: 1fr; }
+  .settings-navigation { padding: 20px 24px 0; border-right: 0; }
+  .settings-navigation > h2 { font-size: 1rem; }
+  .settings-navigation-description, .settings-navigation #identity { display: none; }
+  .settings .settings-navigation .settings-tabs { flex-direction: row; flex-wrap: wrap; gap: 2px; margin: 12px 0 0; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+  .settings .settings-tabs button { gap: 6px; padding: 8px 10px; font-size: .8rem; }
+  .settings-tabs button svg { width: 17px; height: 17px; }
+  .settings .settings-grid { padding-top: 20px; }
+}
+@media (max-width: 620px) {
+  .settings-navigation { padding: 18px 18px 0; }
+  .settings .settings-grid { padding: 20px 18px 32px; }
+  .settings .settings-page-heading { padding-bottom: 20px; }
+  .settings .settings-page-heading h2 { font-size: 1.4rem; }
+  .settings .settings-page-heading p { font-size: .85rem; }
+  .settings .settings-detail-row { grid-template-columns: 1fr; gap: 16px; padding: 22px 0; }
+  .settings .settings-row-copy p { max-width: none; }
+  .settings .integration-card-heading { flex-direction: column; gap: 16px; }
+  .settings .calendar-header-actions { width: 100%; justify-content: space-between; }
+  .settings .calendar-row { grid-template-columns: 26px minmax(80px,1fr) auto auto auto; gap: 8px; padding: 16px 0; }
+  .settings .calendar-row-main { grid-column: 1 / -1; }
+  .settings .calendar-row-order { grid-row: 2; grid-column: 1; }
+  .settings .calendar-color-control { grid-row: 2; grid-column: 2; }
+  .settings .calendar-enabled-control { grid-row: 2; grid-column: 3; }
+  .settings .calendar-row-edit { grid-row: 2; grid-column: 4; padding-top: 24px; }
+  .settings .calendar-row-remove { grid-row: 2; grid-column: 5; padding-top: 24px; }
+  .settings .calendar-view-switch { gap: 20px; }
+  .settings .calendar-connection-card { flex-wrap: wrap; }
+  .settings .calendar-type-choices { grid-template-columns: 1fr; }
+  .settings .calendar-type-choices button { min-height: 190px; padding: 20px; }
+  .settings .calendar-color-control select { min-width: 80px; width: 100%; }
+  .settings .calendar-dialog-actions { flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings input[type="checkbox"]::after { transition: none; }
+}

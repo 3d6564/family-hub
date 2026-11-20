@@ -244,6 +244,35 @@ test('calendar feed CRUD is adult-only, household-scoped, and never returns URLs
   assert.equal((await fetch(`${route}/${created.id}`, { method: 'DELETE', headers })).status, 204);
 });
 
+test('private iCal feeds retain secret URLs on edit and supply events without exposing URLs to displays', async (t) => {
+  const previous = process.env.APP_ORIGIN; process.env.APP_ORIGIN = 'http://127.0.0.1';
+  t.after(() => previous === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previous);
+  const db = database(), home = household(db, 'Test home');
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?,'adult')").run(home, 'private-feed@example.test', 'Adult', 'unused').lastInsertRowid);
+  const adultToken = createSession(db, { householdId: home, userId: adult });
+  const deviceToken = createSession(db, { householdId: home, kind: 'device', deviceName: 'Test wall' });
+  const secretUrl = 'https://calendar.google.com/calendar/ical/sample%40example.test/private-synthetic-token/basic.ics';
+  const server = createApp(db, { fetchFeedEvents: async feed => {
+    assert.equal(feed.url, secretUrl);
+    return [{ id: 'sample-event', title: 'Sample event', start: { date: '2026-12-02' }, end: { date: '2026-12-03' }, source: 'ical' }];
+  } }).listen(0);
+  t.after(() => { server.close(); db.close(); }); await new Promise(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const headers = { cookie: `family_user_session=${adultToken}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' };
+  const created = await (await fetch(`${base}/api/calendar/feeds`, { method: 'POST', headers, body: JSON.stringify({ name: 'Private feed', url: secretUrl, color: '#4285f4' }) })).json();
+  assert.doesNotMatch(JSON.stringify(created), /private-synthetic-token/);
+  const edited = await fetch(`${base}/api/calendar/feeds/${created.id}`, { method: 'PATCH', headers, body: JSON.stringify({ name: 'Renamed feed', url: '' }) });
+  assert.equal(edited.status, 200);
+  assert.equal(db.prepare('SELECT url FROM calendar_feeds WHERE id=?').get(created.id).url, secretUrl);
+  const tested = await fetch(`${base}/api/calendar/feeds/test`, { method: 'POST', headers, body: JSON.stringify({ feedId: created.id }) });
+  assert.deepEqual(await tested.json(), { ok: true, eventCount: 1 });
+  const deviceHeaders = { cookie: `family_device_session=${deviceToken}` };
+  assert.equal((await fetch(`${base}/api/calendar/feeds`, { headers: deviceHeaders })).status, 403);
+  const events = await (await fetch(`${base}/api/calendar/events?from=2026-12-01T00:00:00Z&to=2027-01-01T00:00:00Z`, { headers: deviceHeaders })).json();
+  assert.equal(events.events[0].title, 'Sample event');
+  assert.doesNotMatch(JSON.stringify(events), /private-synthetic-token|calendar\.google\.com/);
+});
+
 test('iCal connection tests are adult-only, do not save feeds, and hide feed URLs', async (t) => {
   const previous = process.env.APP_ORIGIN; process.env.APP_ORIGIN = 'http://127.0.0.1';
   t.after(() => previous === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previous);

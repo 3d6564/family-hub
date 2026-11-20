@@ -235,7 +235,17 @@ export function createGoogleCalendarConnector(db, options = {}) {
       headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
       body: tokenForm(values, credentials),
     });
-    if (status < 200 || status >= 300) throw new GoogleCalendarError('Google authorization could not be completed.', 502);
+    if (status < 200 || status >= 300) {
+      // Allowlist recovery messages; provider descriptions can contain private values.
+      const message = status >= 500 || status === 429
+        ? 'Google authorization is temporarily unavailable. Try again later.'
+        : body.error === 'invalid_grant'
+          ? 'Google authorization expired or was revoked. Disconnect and reconnect Google Calendar. In Google Testing mode, calendar authorization normally expires after seven days.'
+          : body.error === 'invalid_client' || body.error === 'unauthorized_client'
+            ? 'Google rejected the OAuth client credentials. Check the client ID and secret in Settings → Calendars → Account connections.'
+            : 'Google authorization could not be completed. Check the Google connection settings and try again.';
+      throw new GoogleCalendarError(message, 502);
+    }
     if (typeof body.access_token !== 'string' || body.access_token.length > 8192 || !Number.isFinite(Number(body.expires_in)) || Number(body.expires_in) <= 0) {
       throw new GoogleCalendarError('Google authorization returned invalid credentials.', 502);
     }
@@ -246,7 +256,7 @@ export function createGoogleCalendarConnector(db, options = {}) {
     const cached = accessTokens.get(householdId);
     if (!force && cached && cached.expiresAt > Date.now() + 30_000) return cached.value;
     const row = rowFor(householdId);
-    if (!row) throw new GoogleCalendarError('Connect Google Calendar in Settings → Integrations first.', 409);
+    if (!row) throw new GoogleCalendarError('Connect Google Calendar in Settings → Calendars → Account connections first.', 409);
     const refreshToken = unseal(row.credentials, key, householdId);
     const body = await requestTokens({ grant_type: 'refresh_token', refresh_token: refreshToken }, oauthCredentials(householdId));
     const rotatedToken = typeof body.refresh_token === 'string' && body.refresh_token.length <= 8192 ? body.refresh_token : refreshToken;
@@ -365,7 +375,7 @@ export function createGoogleCalendarConnector(db, options = {}) {
   function begin(householdId, auth) {
     keyBytes(key);
     const credentials = oauthCredentials(householdId);
-    if (!credentials.clientId || !credentials.clientSecret) throw new GoogleCalendarError('Enter Google OAuth credentials in Settings → Integrations and confirm SITE_URL is correct.', 503);
+    if (!credentials.clientId || !credentials.clientSecret) throw new GoogleCalendarError('Enter Google OAuth credentials in Settings → Calendars → Account connections and confirm SITE_URL is correct.', 503);
     if (!auth || auth.kind !== 'user' || auth.role !== 'adult' || !Number.isInteger(auth.id) || !Number.isInteger(auth.user_id)) {
       throw new GoogleCalendarError('An adult account is required.', 403);
     }
@@ -433,7 +443,7 @@ export function createGoogleCalendarConnector(db, options = {}) {
       return 'success';
     } catch {
       db.prepare('UPDATE google_calendar_connections SET last_error=?,updated_at=CURRENT_TIMESTAMP WHERE household_id=?')
-        .run('Google Calendar connected, but the calendar list could not load. Try refreshing it in Settings → Integrations.', request.householdId);
+        .run('Google Calendar connected, but the calendar list could not load. Test the connection in Settings → Calendars → Account connections.', request.householdId);
       notify(request.householdId);
       return 'partial';
     }
@@ -547,7 +557,7 @@ export function createGoogleCalendarConnector(db, options = {}) {
       const attemptedAt = new Date().toISOString();
       db.prepare(`UPDATE google_calendar_connections SET last_attempt_at=?,last_success_at=CASE WHEN ? THEN ? ELSE last_success_at END,
         last_error=?,updated_at=CURRENT_TIMESTAMP WHERE household_id=?`)
-        .run(attemptedAt, loaded ? 1 : 0, attemptedAt, errors.length ? 'Some Google calendars could not load. Check Settings → Integrations.' : null, householdId);
+        .run(attemptedAt, loaded ? 1 : 0, attemptedAt, errors.length ? 'Some Google calendars could not load. Check Settings → Calendars → Account connections.' : null, householdId);
     }
     return { events, errors };
   }

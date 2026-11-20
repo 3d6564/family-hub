@@ -4,6 +4,7 @@ import { createSettingsForms } from './settings-forms.js';
 import { createListsView } from './lists-view.js';
 import { createKioskInput } from './kiosk-input.js';
 import { createCalendarSettings } from './calendar-settings.js';
+import { createActivityForms } from './activity-forms.js';
 const $=(s,p=document)=>p.querySelector(s), $$=(s,p=document)=>[...p.querySelectorAll(s)];
 let me, dashboard, members=[], routineCatalog=[], choreCatalog=[], calendarEvents=[], weatherKeys={}, deploymentVersion, cursor=new Date(), openEvent, pinnedMonth=false, shownDay=new Date().toLocaleDateString('en-CA'), shownRoutinePeriod, setupMode=false;
 let weatherHasKeys = {};
@@ -12,6 +13,11 @@ const settingsForms = createSettingsForms({
   onDiscard: form => { if (form.id === 'weather-form') { weatherKeys = {}; form.dataset.activeProvider = ''; showWeatherProvider(form.elements.weatherProvider.value); } if(form.id==='screen-pair-form')syncScreenPairMode(); },
 });
 const settingsRoot = () => $('.settings');
+const activityForms = createActivityForms({
+  onSaved: async form => { await refresh(); if (me.user?.role === 'adult') await loadSettings(); if (form.id === 'edit-item-form' && form.dataset.kind === 'reminder') await renderCalendar(); },
+  onCalendarSaved: renderCalendar,
+  onDiscard: form => { if (form.id === 'chore-form') syncChoreDays(); if (form.id === 'edit-item-form') syncChoreEditDays(); },
+});
 const calendarSettings = createCalendarSettings({ api, settingsForms, getMe: () => me, onEventsChanged: renderCalendar });
 const listsView = createListsView({ api, settingsForms, getMe: () => me });
 const kioskInput = createKioskInput({
@@ -21,7 +27,7 @@ const kioskInput = createKioskInput({
   onIdle: () => openView('calendar'),
 });
 const editableSettings = form => !settingsForms.dirty(form) && !settingsForms.busy(form);
-window.addEventListener('beforeunload', event => { if (settingsForms.pending(settingsRoot()).length || settingsRoot().querySelector('[aria-busy="true"]')) { event.preventDefault(); event.returnValue = ''; } });
+window.addEventListener('beforeunload', event => { if (settingsForms.pending(settingsRoot()).length || settingsRoot().querySelector('[aria-busy="true"]') || activityForms.pending(document).length || document.querySelector('[data-activity-form][aria-busy="true"]')) { event.preventDefault(); event.returnValue = ''; } });
 cursor=new Date(cursor.getFullYear(),cursor.getMonth(),1);
 function toast(message){const el=$('#toast');el.textContent=message;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2500)}
 async function api(url,options={}){const response=await fetch(url,{...options,headers:{'Content-Type':'application/json','X-CSRF-Token':'1',...options.headers}});if(response.status===401){if(!setupMode)showAuth();throw new Error('Sign in is required.')}if(!response.ok){const body=await response.json().catch(()=>({}));throw new Error(body.error||'The request failed.')}return response.status===204?null:response.json()}
@@ -44,9 +50,13 @@ async function load(){
 }
 async function refresh(){dashboard=await api('/api/dashboard');if(dashboard.dim&&me?.household)Object.assign(me.household,{dimEnabled:dashboard.dim.enabled,dimStart:dashboard.dim.start,dimEnd:dashboard.dim.end,timezone:dashboard.dim.timezone,theme:dashboard.dim.theme,displayTitle:dashboard.dim.displayTitle,tokenBoardEnabled:dashboard.dim.tokenBoardEnabled,routineMorningStart:dashboard.dim.routineMorningStart,routineAfternoonStart:dashboard.dim.routineAfternoonStart,routineBedtimeStart:dashboard.dim.routineBedtimeStart});updateHouseholdTitle();renderTasks();renderPlans();renderWeather();if(document.body.dataset.view==='tokens')await renderTokens();await renderTokenBoard();applyDim()}
 function fillMembers(){
-  for(const select of $$('[name=childId],[name=assigneeId]')){const value=select.value,first=select.name==='assigneeId'?'<option value="">Anyone</option>':'';select.innerHTML=first+members.filter(m=>select.name!=='childId'||m.role==='child').map(m=>`<option value="${m.id}">${escape(m.name)}</option>`).join('');select.value=value}
+  for(const select of $$('select[name=childId],select[name=assigneeId]')){const form=select.closest('form');if(activityForms.dirty(form)||activityForms.busy(form))continue;const value=select.value,first=select.name==='assigneeId'?'<option value="">Anyone</option>':'';select.innerHTML=first+members.filter(m=>select.name!=='childId'||m.role==='child').map(m=>`<option value="${m.id}">${escape(m.name)}</option>`).join('');select.value=value}
   const selected=$$('[name=childId]:checked',$('#routine-children')).map(input=>input.value);
-  $('#routine-children').innerHTML=members.filter(m=>m.role==='child').map(m=>`<label><input type="checkbox" name="childId" value="${m.id}" ${selected.includes(String(m.id))?'checked':''}> ${escape(m.name)}</label>`).join('')||'<p class="muted">Add a child before creating a routine.</p>';
+  const routineForm=$('#routine-form');
+  if(!activityForms.dirty(routineForm)&&!activityForms.busy(routineForm)){
+    $('#routine-children').innerHTML=members.filter(m=>m.role==='child').map(m=>`<label><input type="checkbox" name="childId" value="${m.id}" ${selected.includes(String(m.id))?'checked':''}> ${escape(m.name)}</label>`).join('')||'<p class="muted">Add a child before creating a routine.</p>';
+    activityForms.mark(routineForm);
+  }
   const target=$('#members'),old=new Map($$('[data-member-row]',target).map(row=>[Number(row.dataset.memberRow),row]));
   for(const member of members){
     let row=old.get(member.id);
@@ -139,7 +149,7 @@ async function loadSettings(sections = ['release', 'weather', 'display', 'feeds'
       const values = { '#dim-form': { dimEnabled: !!me.household.dimEnabled, dimStart: me.household.dimStart || '21:00', dimEnd: me.household.dimEnd || '07:00' }, '#theme-form': { theme: me.household.theme || 'green' }, '#week-start-form': { weekStartsOn: me.household.weekStartsOn } };
       for (const [selector, entries] of Object.entries(values)) { const form = $(selector); if (!editableSettings(form)) continue; for (const [name, value] of Object.entries(entries)) { const field = form.elements[name]; if (field.type === 'checkbox') field.checked = value; else field.value = value; } settingsForms.mark(form); }
     }],
-    feeds: ['#calendar-feeds', async () => { await calendarSettings.load(); }],
+    feeds: ['#calendar-integration, #calendar-feeds', async () => { await calendarSettings.load(); }],
     tasks: ['#routine-order', async () => {
       const results = await Promise.allSettled([api('/api/routines'), api('/api/chores'), api('/api/routines/history'), api('/api/chores/history')]);
       if (results[0].status === 'fulfilled') { routineCatalog = results[0].value; $('#routine-order').innerHTML = itemEditor(routineCatalog, 'routine'); }
@@ -240,14 +250,95 @@ function setupSettingsTabs() {
   const integrations = document.createElement('section'); integrations.className = 'settings-panel'; integrations.id = 'settings-panel-integrations'; integrations.dataset.settingsCategory = 'integrations'; integrations.setAttribute('role', 'tabpanel'); integrations.setAttribute('aria-labelledby', 'settings-tab-integrations');
   integrations.innerHTML = '<h3>Integrations</h3><div id="integrations-grid" class="integrations-grid"></div>';
   grid.append(integrations);
-  calendarSettings.mount($('#integrations-grid', integrations));
+  const calendarPanel = $('#settings-panel-calendars');
+  const calendarGrid = document.createElement('div'); calendarGrid.className = 'integrations-grid';
+  calendarPanel.prepend(calendarGrid);
+  calendarSettings.mount(calendarGrid);
+  const calendarPreferences = document.createElement('details'); calendarPreferences.className = 'calendar-preferences';
+  calendarPreferences.innerHTML = '<summary>Calendar display preferences</summary>';
+  calendarPreferences.append($('#week-start-form'));
+  calendarPanel.append(calendarPreferences);
   const tabs = document.createElement('div'); tabs.id = 'settings-tabs'; tabs.className = 'settings-tabs'; tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Settings sections');
   for (const [id, label] of [...categories, ['integrations', 'Integrations']]) { const button = document.createElement('button'); button.id = `settings-tab-${id}`; button.type = 'button'; button.dataset.settingsTab = id; button.setAttribute('role', 'tab'); button.setAttribute('aria-controls', `settings-panel-${id}`); button.textContent = label; button.onclick = () => activateSettingsTab(id); tabs.append(button); }
-  tabs.onkeydown = event => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); const buttons = $$('[role="tab"]', tabs), current = buttons.indexOf(document.activeElement); if (current < 0) return; const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (current + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length; if (activateSettingsTab(buttons[next].dataset.settingsTab)) buttons[next].focus(); };
-  grid.before(tabs);
+  const sidebarLayout = window.matchMedia('(min-width:901px)');
+  const updateTabOrientation = () => tabs.setAttribute('aria-orientation', sidebarLayout.matches ? 'vertical' : 'horizontal');
+  updateTabOrientation(); sidebarLayout.addEventListener('change', updateTabOrientation);
+  tabs.onkeydown = event => { if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); const buttons = $$('[role="tab"]', tabs), current = buttons.indexOf(document.activeElement); if (current < 0) return; const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (current + (['ArrowRight', 'ArrowDown'].includes(event.key) ? 1 : -1) + buttons.length) % buttons.length; if (activateSettingsTab(buttons[next].dataset.settingsTab)) buttons[next].focus(); };
+  const workspace = document.createElement('div'); workspace.className = 'settings-workspace';
+  grid.before(workspace); workspace.append(tabs, grid);
   setupAccessGroups();
-  const note = document.createElement('p'); note.className = 'muted'; note.textContent = 'Display, calendar, routine, weather, and member settings apply to the whole household. The header light/dark toggle applies only to this browser.'; tabs.before(note);
   activateSettingsTab('display');
+}
+
+/** Present existing forms as labelled settings rows without replacing their state or handlers. */
+function setupSettingsPresentation() {
+  const root = settingsRoot(), tabs = $('#settings-tabs');
+  if (!tabs) return;
+  if (!$('.settings-navigation', root)) {
+    const navigation = document.createElement('div'); navigation.className = 'settings-navigation';
+    tabs.before(navigation);
+    const title = document.createElement('h2'); title.textContent = 'Settings';
+    const description = document.createElement('p'); description.className = 'settings-navigation-description'; description.textContent = 'Make room for your everyday.';
+    navigation.append(title, description, tabs, $('#identity'));
+    root.querySelector(':scope > h2')?.remove();
+  }
+  const pages = {
+    display: ['Display settings', 'Make Family Hub feel at home. Choose how your household display looks.'],
+    screens: ['Your screens', 'Connect and manage the displays around your home.'],
+    calendars: ['Calendar settings', 'All your household calendars, together in one place.'],
+    routines: ['Routine settings', 'Set the daily rhythm for your household.'],
+    weather: ['Weather settings', 'A useful forecast, for the place you call home.'],
+    household: ['Your household', 'Manage the people who share this space.'],
+    access: ['Account & data', 'Your sign-in, household backups, and recovery options.'],
+    integrations: ['Connections', 'Connect the services your household already uses.'],
+  };
+  const icons = {
+    display: '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/>',
+    screens: '<rect x="2" y="3" width="14" height="12" rx="2"/><rect x="16" y="9" width="6" height="12" rx="1"/><path d="M5 19h8m-4-4v4"/>',
+    calendars: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 11h18m-14 4h3m4 0h3"/>',
+    routines: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    weather: '<path d="M7 17a5 5 0 1 1 9-4 3 3 0 1 1 1 6H7a3 3 0 0 1 0-6M8 2v2M2 8h2m-.2-4.2 1.4 1.4M12.8 5.2l1.4-1.4"/>',
+    household: '<circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3m2-16a3 3 0 0 1 0 6m1 3a5 5 0 0 1 3 5v2"/>',
+    access: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4m-4 5v2"/>',
+    integrations: '<path d="M8 3v5m8-5v5M5 8h14v3a7 7 0 0 1-14 0V8m7 10v4"/>',
+  };
+  for (const [id, [title, description]] of Object.entries(pages)) {
+    const panel = $(`#settings-panel-${id}`);
+    if (!panel || $('.settings-page-heading', panel)) continue;
+    const heading = document.createElement('header'); heading.className = 'settings-page-heading';
+    const h2 = document.createElement('h2'); h2.textContent = title;
+    const copy = document.createElement('p'); copy.textContent = description;
+    heading.append(h2, copy); panel.prepend(heading);
+    const oldHeading = heading.nextElementSibling;
+    if (oldHeading?.tagName === 'H3' && id !== 'access' && id !== 'screens') oldHeading.remove();
+    if (id === 'calendars') $$(':scope > h3', panel).forEach(node => node.remove());
+    const button = $(`#settings-tab-${id}`);
+    if (button) {
+      const label = document.createElement('span'); label.textContent = id === 'access' ? 'Account & data' : id === 'integrations' ? 'Connections' : button.textContent;
+      button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${icons[id]}</svg>`;
+      button.append(label);
+    }
+  }
+  const rows = {
+    'display-title-form': ['Display title', 'A familiar name for the top of your screen.'],
+    'theme-form': ['Color palette', 'Set the default palette for your household. Each device can choose its own.'],
+    'token-board-form': ['Token balances', 'Let children see their progress on the calendar.'],
+    'dim-form': ['Scheduled dark mode', 'A softer display when the day winds down. This overrides the device toggle during the selected hours.'],
+    'routine-schedule-form': ['Daily periods', 'Choose when Morning, Afternoon, and Bedtime begin. Times apply to the whole household.'],
+    'weather-form': ['Forecast', 'Choose a provider, location, and how often to update.'],
+    'member-form': ['Add a person', 'Invite an adult or add a child to your household.'],
+    'password-form': ['Change password', 'Use a unique password to protect your account.'],
+    'screen-pair-form': ['Add or reconnect', 'Open Family Hub on your display and enter the code shown there.'],
+  };
+  for (const [id, [title, description]] of Object.entries(rows)) {
+    const form = $(`#${id}`);
+    if (!form || form.closest('.settings-detail-row')) continue;
+    const row = document.createElement('section'); row.className = 'settings-detail-row';
+    const copy = document.createElement('div'); copy.className = 'settings-row-copy';
+    const heading = document.createElement('h3'); heading.textContent = title;
+    const help = document.createElement('p'); help.textContent = description;
+    copy.append(heading, help); form.before(row); row.append(copy, form);
+  }
 }
 function setupAccessGroups() {
   // Retain Access, but separate account actions from maintenance and restoration.
@@ -276,17 +367,38 @@ function activateSettingsTab(id) {
 function openView(name) {
   if (name === 'plans' || !['calendar', 'chores', 'routines', 'settings', 'tokens', 'lists'].includes(name)) name = 'calendar';
   if (document.body.dataset.view === 'settings' && name !== 'settings' && !settingsForms.guard(settingsRoot())) { location.hash = 'settings'; return; }
+  const currentView = document.body.dataset.view;
+  if (currentView && currentView !== name && !activityForms.guard(document)) { location.hash = currentView; return; }
   document.body.dataset.view = name;
   $$('.view').forEach(view => view.classList.toggle('mobile-active', view.dataset.view === name));
   $$('[data-nav]').forEach(button => { const active = button.dataset.nav === name; button.classList.toggle('active', active); if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); });
-  if (name === 'settings' && me.user?.role === 'adult') { setupDisplayTitleSetting(); setupRoutineScheduleSetting(); setupSettingsTabs(); addRoutineSettingsTab(); setupTokenBoardSetting(); setupScreensSettings(); listsView.settings(); settingsForms.watch(settingsRoot()); }
+  if (name === 'settings' && me.user?.role === 'adult') { setupDisplayTitleSetting(); setupRoutineScheduleSetting(); setupSettingsTabs(); addRoutineSettingsTab(); setupTokenBoardSetting(); setupScreensSettings(); listsView.settings(); setupSettingsPresentation(); settingsForms.watch(settingsRoot()); }
   if (name === 'lists') listsView.refresh();
   if (name === 'tokens') renderTokens(); if (name === 'calendar') renderTokenBoard(); if (dashboard) renderWeather(); location.hash = name; kioskInput.viewChanged();
 }
 let stream;async function refreshCalendar(){me=await api('/api/me');await renderCalendar()}function connectEvents(){stream?.close();stream=new EventSource('/api/events/stream');for(const name of ['tasks','dashboard'])stream.addEventListener(name,refresh);stream.addEventListener('calendar',refreshCalendar);stream.addEventListener('lists',()=>{if(document.body.dataset.view==='lists')listsView.refresh()})}
 
 $('#login-form').onsubmit=async e=>{e.preventDefault();try{await api('/api/login',{method:'POST',body:JSON.stringify(formJson(e.target))});$('#auth-error').textContent='';await load()}catch(error){$('#auth-error').textContent=error.message}};
-document.addEventListener('change',async e=>{if(!e.target.dataset.routine&&!e.target.dataset.chore)return;try{if(e.target.dataset.routine)await api(`/api/routines/${e.target.dataset.routine}/toggle`,{method:'POST',body:JSON.stringify({childId:+e.target.dataset.child})});if(e.target.dataset.chore)await api(`/api/chores/${e.target.dataset.chore}/toggle`,{method:'POST'});await refresh();if(me.user?.role==='adult')await loadSettings(['tasks'])}catch(error){toast(error.message)}});
+document.addEventListener('change',async e=>{
+  const input=e.target;if(!input.dataset.routine&&!input.dataset.chore)return;
+  const root=input.closest('.view');let saved=false;input.disabled=true;
+  actionFeedback(root,'Saving…');
+  try{
+    if(input.dataset.routine)await api(`/api/routines/${input.dataset.routine}/toggle`,{method:'POST',body:JSON.stringify({childId:+input.dataset.child})});
+    else await api(`/api/chores/${input.dataset.chore}/toggle`,{method:'POST'});
+    saved=true;await refresh();if(me.user?.role==='adult')await loadSettings(['tasks']);
+    actionFeedback(root,'');
+  }catch(error){
+    if(!saved)input.checked=!input.checked;
+    actionFeedback(root,saved?'Saved. The display could not refresh. Reload when the connection returns.':`${error.message} Your change was not saved. Try again.`,true);
+  }finally{input.disabled=false}
+});
+/** Keep action failures beside the affected view until a retry or navigation. */
+function actionFeedback(root,message,error=false){
+  let status=$(':scope > .view-action-status',root);
+  if(!status){status=document.createElement('p');status.className='view-action-status';root.querySelector('.card-title')?.after(status)}
+  status.textContent=message;status.classList.toggle('error',error);status.setAttribute('role',error?'alert':'status');
+}
 async function settingsAction(button, work) {
   if(button.disabled)return;
   button.disabled=true;button.setAttribute('aria-busy','true');
@@ -309,20 +421,61 @@ document.addEventListener('click',async e=>{const button=e.target.closest('[data
 document.addEventListener('submit',async e=>{if(!e.target.dataset.memberEdit)return;e.preventDefault();const form=e.target;const saved=await settingsForms.run(form,async()=>{const values=formJson(form);if(!values.email)delete values.email;if(!values.password)delete values.password;await api(`/api/members/${form.dataset.memberEdit}`,{method:'PATCH',body:JSON.stringify(values)});form.elements.email.value='';form.elements.password.value=''});if(saved)await reloadMembers(form.dataset.memberEdit)});
 function showEvent(event){const format=value=>value?new Intl.DateTimeFormat(undefined,value.length===10?{dateStyle:'full'}:{dateStyle:'full',timeStyle:'short'}).format(new Date(value.length===10?`${value}T12:00:00`:value)):'Not specified';openEvent=event;const editable=event.local&&me.user;$('#event-title').textContent=event.title;$('#event-source').textContent=event.source==='ical'?`Calendar feed · ${event.calendar}`:event.source==='google'?`Google Calendar · ${event.calendar}`:'Local reminder · Family Hub';$('#event-start').textContent=format(event.startValue);$('#event-end').textContent=format(event.endValue);$('#edit-reminder').hidden=!editable;$('#delete-reminder').hidden=!editable;$('#event-dialog').showModal()}
 $('#event-dialog').addEventListener('click',event=>{const rect=event.currentTarget.getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)event.currentTarget.close()});
-$('#add-reminder').onclick=()=>$('#reminder-dialog').showModal();
-$('#reminder-dialog').addEventListener('click',event=>{const rect=event.currentTarget.getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)event.currentTarget.close()});
+$('#add-reminder').onclick=()=>activityForms.opened($('#reminder-dialog'),$('#add-reminder'));
 function setEditSection(id,enabled){const section=$(id);section.hidden=!enabled;section.querySelectorAll('input,select').forEach(control=>control.disabled=!enabled)}
-function openItemEditor(kind,id){const form=$('#edit-item-form');form.dataset.kind=kind;form.elements.itemId.value=id||'';setEditSection('#edit-routine-fields',kind==='routine');setEditSection('#edit-chore-fields',kind==='chore');setEditSection('#edit-reminder-fields',kind==='reminder');let item;if(kind==='routine'){item=routineCatalog.find(r=>r.id===id);$('#edit-item-kicker').textContent='EDIT ROUTINE';$('#edit-item-heading').textContent='Edit routine';$('#edit-item-title').value=item.title;$('#edit-routine-days').value=item.days;form.elements.routinePeriod.value=item.period||'morning';$('#edit-routine-children').innerHTML=members.filter(member=>member.role==='child').map(member=>`<label><input type="checkbox" name="routineChild" value="${member.id}" ${item.child_ids.includes(member.id)?'checked':''}> ${escape(member.name)}</label>`).join('')}else if(kind==='chore'){item=choreCatalog.find(c=>c.id===id);$('#edit-item-kicker').textContent='EDIT CHORE';$('#edit-item-heading').textContent='Edit chore';$('#edit-item-title').value=item.title;form.elements.choreAssignee.innerHTML='<option value="">Anyone</option>'+members.map(member=>`<option value="${member.id}">${escape(member.name)}</option>`).join('');form.elements.choreAssignee.value=item.assignee_id||'';form.elements.choreRecurrence.value=item.recurrence==='once'?'once':'scheduled';$('#edit-chore-days').value=item.days||'';form.elements.rewardAmount.value=(item.reward_quarters/4).toFixed(2);syncChoreEditDays()}else{item=openEvent;$('#edit-item-kicker').textContent='EDIT REMINDER';$('#edit-item-heading').textContent='Edit reminder';$('#edit-item-title').value=item.title;const date=new Date(item.startValue);date.setMinutes(date.getMinutes()-date.getTimezoneOffset());form.elements.reminderStartsAt.value=date.toISOString().slice(0,16)}$('#edit-item-dialog').showModal();$('#edit-item-title').focus()}
+function openItemEditor(kind,id){
+  const form=$('#edit-item-form');form.dataset.kind=kind;form.elements.itemId.value=id||'';
+  setEditSection('#edit-routine-fields',kind==='routine');setEditSection('#edit-chore-fields',kind==='chore');setEditSection('#edit-reminder-fields',kind==='reminder');
+  let item;
+  if(kind==='routine'){
+    item=routineCatalog.find(r=>r.id===id);$('#edit-item-kicker').textContent='EDIT ROUTINE';$('#edit-item-heading').textContent='Edit routine';$('#edit-item-title').value=item.title;
+    $('#edit-routine-days').value=item.days;form.elements.routinePeriod.value=item.period||'morning';
+    $('#edit-routine-children').innerHTML=members.filter(member=>member.role==='child').map(member=>`<label><input type="checkbox" name="routineChild" value="${member.id}" ${item.child_ids.includes(member.id)?'checked':''}> ${escape(member.name)}</label>`).join('');
+  }else if(kind==='chore'){
+    item=choreCatalog.find(c=>c.id===id);$('#edit-item-kicker').textContent='EDIT CHORE';$('#edit-item-heading').textContent='Edit chore';$('#edit-item-title').value=item.title;
+    form.elements.choreAssignee.innerHTML='<option value="">Anyone</option>'+members.map(member=>`<option value="${member.id}">${escape(member.name)}</option>`).join('');
+    form.elements.choreAssignee.value=item.assignee_id||'';form.elements.choreRecurrence.value=item.recurrence==='once'?'once':'scheduled';$('#edit-chore-days').value=item.days||'';form.elements.rewardAmount.value=(item.reward_quarters/4).toFixed(2);syncChoreEditDays();
+  }else{
+    item=openEvent;form.elements.itemId.value=item.id.slice(6);$('#edit-item-kicker').textContent='EDIT REMINDER';$('#edit-item-heading').textContent='Edit reminder';$('#edit-item-title').value=item.title;
+    const date=new Date(item.startValue);date.setMinutes(date.getMinutes()-date.getTimezoneOffset());form.elements.reminderStartsAt.value=date.toISOString().slice(0,16);
+  }
+  const trigger=kind==='reminder'?$('#add-reminder'):$(`[data-edit-${kind}="${id}"]`);
+  activityForms.opened($('#edit-item-dialog'),trigger);
+}
 function syncChoreEditDays(){const scheduled=$('#edit-item-form').elements.choreRecurrence.value==='scheduled';$('#edit-chore-days-field').hidden=!scheduled;$('#edit-chore-days').required=scheduled}
 $('#edit-item-form').elements.choreRecurrence.onchange=syncChoreEditDays;
-$('#edit-item-form').onsubmit=async e=>{e.preventDefault();const form=e.target,kind=form.dataset.kind,id=form.elements.itemId.value,title=$('#edit-item-title').value.trim();if(!title)return toast('Enter a title.');try{if(kind==='routine'){const childIds=[...$('#edit-routine-children').querySelectorAll('[name="routineChild"]:checked')].map(input=>+input.value);if(!childIds.length)return toast('Choose at least one child.');await api(`/api/routines/${id}`,{method:'PATCH',body:JSON.stringify({title,days:$('#edit-routine-days').value,period:form.elements.routinePeriod.value,childIds})})}else if(kind==='chore'){await api(`/api/chores/${id}`,{method:'PATCH',body:JSON.stringify({title,assigneeId:form.elements.choreAssignee.value?+form.elements.choreAssignee.value:null,recurrence:form.elements.choreRecurrence.value,days:$('#edit-chore-days').value,rewardAmount:Number(form.elements.rewardAmount.value)})})}else{await api(`/api/reminders/${openEvent.id.slice(6)}`,{method:'PATCH',body:JSON.stringify({title,startsAt:new Date(form.elements.reminderStartsAt.value).toISOString()})});$('#event-dialog').close()}$('#edit-item-dialog').close();await refresh();if(me.user?.role==='adult')await loadSettings();if(kind==='reminder')await renderCalendar();toast('Saved.')}catch(error){toast(error.message)}};
-document.addEventListener('click',e=>{if(e.target.closest('[data-close-edit]'))$('#edit-item-dialog').close()});
+activityForms.bind($('#edit-item-form'),form=>{
+  const kind=form.dataset.kind,id=form.elements.itemId.value,title=form.elements.itemTitle.value.trim();
+  if(!title)throw new Error('Enter a title.');
+  if(kind==='routine'){
+    const childIds=$$('[name="routineChild"]:checked',form).map(input=>+input.value);
+    if(!childIds.length)throw new Error('Choose at least one child.');
+    return api(`/api/routines/${id}`,{method:'PATCH',body:JSON.stringify({title,days:form.elements.routineDays.value,period:form.elements.routinePeriod.value,childIds})});
+  }
+  if(kind==='chore')return api(`/api/chores/${id}`,{method:'PATCH',body:JSON.stringify({title,assigneeId:form.elements.choreAssignee.value?+form.elements.choreAssignee.value:null,recurrence:form.elements.choreRecurrence.value,days:form.elements.choreDays.value,rewardAmount:Number(form.elements.rewardAmount.value)})});
+  return api(`/api/reminders/${id}`,{method:'PATCH',body:JSON.stringify({title,startsAt:new Date(form.elements.reminderStartsAt.value).toISOString()})});
+},{dialog:$('#edit-item-dialog')});
 document.addEventListener('click',async e=>{const routineEdit=e.target.closest('[data-edit-routine]'),choreEdit=e.target.closest('[data-edit-chore]');if(routineEdit){openItemEditor('routine',+routineEdit.dataset.editRoutine);return}if(choreEdit){openItemEditor('chore',+choreEdit.dataset.editChore);return}const button=e.target.closest('[data-delete-routine],[data-delete-chore]');if(!button)return;const routine=button.dataset.deleteRoutine!=null,id=+(button.dataset.deleteRoutine||button.dataset.deleteChore);if(!confirm(`Delete this ${routine?'routine':'chore'}?`))return;try{await api(`/${routine?'api/routines':'api/chores'}/${id}`,{method:'DELETE'});await refresh();await loadSettings()}catch(error){toast(error.message)}});
 $('#edit-reminder').onclick=()=>{$('#event-dialog').close();openItemEditor('reminder')};
 $('#delete-reminder').onclick=async()=>{if(!openEvent||!confirm('Delete this reminder?'))return;try{await api(`/api/reminders/${openEvent.id.slice(6)}`,{method:'DELETE'});$('#event-dialog').close();await renderCalendar()}catch(error){toast(error.message)}};
-function bindForm(id,path,convert=x=>x){$(id).onsubmit=async e=>{e.preventDefault();try{await api(path,{method:'POST',body:JSON.stringify(convert(formJson(e.target)))});e.target.reset();await refresh();if(me.user?.role==='adult')await loadSettings();toast('Saved.')}catch(error){toast(error.message)}}}
-$('#routine-form').onsubmit=async e=>{e.preventDefault();try{const values=formJson(e.target);values.childIds=[...e.target.querySelectorAll('[name=childId]:checked')].map(input=>+input.value);await api('/api/routines',{method:'POST',body:JSON.stringify(values)});e.target.reset();await refresh();await loadSettings();toast('Saved.')}catch(error){toast(error.message)}};$('#chore-form').elements.recurrence.onchange=()=>{const scheduled=$('#chore-form').elements.recurrence.value==='scheduled';$('#add-chore-days-field').hidden=!scheduled;$('#chore-form').elements.days.required=scheduled};$('#add-chore-days-field').hidden=true;bindForm('#chore-form','/api/chores');
-$('#reminder-form').onsubmit=async e=>{e.preventDefault();try{const values=formJson(e.target);await api('/api/reminders',{method:'POST',body:JSON.stringify({...values,startsAt:new Date(values.startsAt).toISOString()})});e.target.reset();$('#reminder-dialog').close();await renderCalendar();toast('Local reminder added.')}catch(error){toast(error.message)}};
+function syncChoreDays(){const form=$('#chore-form'),scheduled=form.elements.recurrence.value==='scheduled';$('#add-chore-days-field').hidden=!scheduled;form.elements.days.required=scheduled}
+$('#chore-form').elements.recurrence.onchange=syncChoreDays;syncChoreDays();
+for(const [id,path] of [['routine-form','/api/routines'],['chore-form','/api/chores']]){
+  const form=$(`#${id}`);form.dataset.activityForm='true';activityForms.cancelButton(form);
+  activityForms.bind(form,()=>{
+    const values=formJson(form);
+    if(id==='routine-form'){
+      values.childIds=$$('[name=childId]:checked',form).map(input=>+input.value);
+      if(!values.childIds.length)throw new Error('Choose at least one child.');
+    }
+    return api(path,{method:'POST',body:JSON.stringify(values)});
+  },{reset:true});
+}
+$('#reminder-form').dataset.activityForm='true';$('#edit-item-form').dataset.activityForm='true';
+activityForms.bind($('#reminder-form'),form=>{
+  const values=formJson(form);
+  return api('/api/reminders',{method:'POST',body:JSON.stringify({...values,startsAt:new Date(values.startsAt).toISOString()})});
+},{reset:true,calendar:true,dialog:$('#reminder-dialog')});
 $('#member-form').onsubmit=async e=>{e.preventDefault();if(await settingsForms.run(e.target,()=>api('/api/members',{method:'POST',body:JSON.stringify(formJson(e.target))}),{reset:true}))await reloadMembers()};
 $('#password-form').onsubmit=e=>{e.preventDefault();settingsForms.run(e.target,async()=>{const values=formJson(e.target);if(values.newPassword!==values.confirmPassword)throw new Error('New passwords do not match.');await api('/api/password',{method:'POST',body:JSON.stringify(values)})},{reset:true})};
 $('#week-start-form').onsubmit=e=>{e.preventDefault();settingsForms.run(e.target,async()=>{const {weekStartsOn}=await api('/api/household/week-start',{method:'PUT',body:JSON.stringify(formJson(e.target))});me.household.weekStartsOn=weekStartsOn;await renderCalendar()})};
@@ -352,7 +505,7 @@ $('#backup-file').onchange=async e=>{
   await settingsAction($('#backup-restore'),async()=>{const response=await fetch('/api/household/restore',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-CSRF-Token':'1'},body:file});const body=await response.json().catch(()=>({}));if(!response.ok)throw new Error(body.error||'Restore failed.');toast('Restore started. Sign in again after Family Hub restarts.')});
 };
 $('#menu-button').onclick=()=>me.user?openView('settings'):showAuth(true);$('#auth-cancel').onclick=()=>load();$('#prev-month').onclick=()=>{pinnedMonth=true;cursor.setMonth(cursor.getMonth()-1);renderCalendar()};$('#next-month').onclick=()=>{pinnedMonth=true;cursor.setMonth(cursor.getMonth()+1);renderCalendar()};$('#today').onclick=()=>{pinnedMonth=false;cursor=new Date();cursor=new Date(cursor.getFullYear(),cursor.getMonth(),1);renderCalendar()};
-async function checkDeployment(){try{const response=await fetch('/api/version',{cache:'no-store'});if(!response.ok)return;const {version}=await response.json();if(deploymentVersion&&deploymentVersion!==version){if(settingsForms.pending(settingsRoot()).length||settingsRoot().querySelector('[aria-busy="true"]'))return;if(window.caches){const keys=await caches.keys();await Promise.all(keys.map(key=>caches.delete(key)))}const next=new URL(location.href);next.searchParams.set('deployed',version);location.replace(next.href);return}deploymentVersion=version}catch{}}
+async function checkDeployment(){try{const response=await fetch('/api/version',{cache:'no-store'});if(!response.ok)return;const {version}=await response.json();if(deploymentVersion&&deploymentVersion!==version){if(settingsForms.pending(settingsRoot()).length||settingsRoot().querySelector('[aria-busy="true"]')||activityForms.pending(document).length||document.querySelector('[data-activity-form][aria-busy="true"]'))return;if(window.caches){const keys=await caches.keys();await Promise.all(keys.map(key=>caches.delete(key)))}const next=new URL(location.href);next.searchParams.set('deployed',version);location.replace(next.href);return}deploymentVersion=version}catch{}}
 async function refreshLive(){if($('#app').hidden)return;const today=new Date(),day=today.toLocaleDateString('en-CA');if(!pinnedMonth&&(cursor.getFullYear()!==today.getFullYear()||cursor.getMonth()!==today.getMonth()))cursor=new Date(today.getFullYear(),today.getMonth(),1);shownDay=day;await Promise.all([refresh(),renderCalendar()])}
 $('#dim-form').onsubmit=e=>{e.preventDefault();settingsForms.run(e.target,async()=>{const values=formJson(e.target);values.dimEnabled=e.target.elements.dimEnabled.checked;const saved=await api('/api/household/dim',{method:'PUT',body:JSON.stringify(values)});Object.assign(me.household,saved);applyDim()})};
 $('#weather-form').elements.weatherProvider.onchange=()=>showWeatherProvider($('#weather-form').elements.weatherProvider.value);

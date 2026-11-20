@@ -46,7 +46,7 @@ from the updated `compose.yaml`; a stack value alone is not passed into the
 container. Keep all existing environment values, port bindings, and data volumes.
 Retain the key securely outside database backups for connection recovery.
 
-After redeployment, an adult connects through **Settings → Integrations**.
+After redeployment, an adult connects through **Settings → Connections**.
 AnyList uses an unofficial protocol and remains experimental. See
 [AnyList setup and limits](anylist.md).
 
@@ -57,12 +57,12 @@ Create a Google OAuth web client, enable the Google Calendar API, and register
 authorized redirect URI. Replace the host with the exact `SITE_URL` value.
 Google OAuth needs HTTPS; keep the service private behind the HTTPS proxy.
 
-An adult can enter the Google client ID and secret in **Settings → Integrations**.
+An adult can enter the Google client ID and secret in **Settings → Calendars → Account connections**.
 The optional `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` environment
 values remain available as a fallback; app-stored settings take priority. Use
 the updated `compose.yaml` to pass fallback values to the container. Set
 `FAMILY_HUB_INTEGRATION_KEY` as described above if it is not already set. After
-the key is available, connect and select calendars in **Settings → Integrations**.
+the key is available, connect and select calendars in **Settings → Calendars → Account connections**.
 Access is read-only. See the
 [Google Calendar guide](google-calendar.md) for Google Cloud setup and limits.
 

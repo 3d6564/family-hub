@@ -27,20 +27,33 @@ Use the published image and `compose.yaml`. You choose the host tool. Family Hub
 
 Keep port 3000 on your private network. Use HTTPS before phones install the app or you use it across networks. Do not forward port 3000 to the internet.
 
-Backups are downloaded from **Settings**, then **Access**. A backup is the whole household. Keep it private.
+Backups are downloaded from **Settings → Account & data**. A backup is the whole household. Keep it private.
 
 See the [published image guide](docs/published-image.md) and the [update and recovery guide](docs/update-and-recovery.md).
 
 ## Settings
 
-Settings keep separate Display, Screens, Calendars, Routines, Weather, Household,
-Access, and Integrations sections. All section tabs remain visible on phones.
+Settings use a desktop navigation column and aligned setting rows. On phones,
+all section tabs remain visible above the page. Sections cover Display, Screens,
+Calendars, Routines, Weather, Household, Account & data, and Connections.
+Calendar add/edit opens on the page with Back and Cancel controls. Unsaved
+changes require confirmation before leaving.
+
+Lists, task forms, and reminder editors share labels, action placement, and
+palette-aware controls. Task completion remains a checkbox, not an on/off switch.
+Task and reminder forms keep failed edits for retry, block duplicate saves, and
+ask before discarding unsaved changes through Cancel, Escape, or navigation.
+Save failures stay beside the affected form. A failed task-completion request
+restores its checkbox and shows a message beside the tasks. Household palettes,
+calendar event colors, token coins, and wall-display touch targets stay distinct.
 Routines configure the household widget independently of calendars.
 
 Calendar events appear in start-time order across calendars and local reminders.
 Calendar order breaks ties when events start at the same time. Week-start settings
-are under **Calendars**. Manage public iCal feeds and Google Calendar together
-under **Integrations → Calendars**. Select **Add a calendar** to choose a source
+are under **Calendars → Calendar display preferences**. Manage private or public
+iCal feeds and Google Calendar together under **Settings → Calendars**.
+Use **Account connections** to manage the Google account separately from its calendars.
+Select **Add a calendar** to choose a source
 type. Test an iCal feed before saving it. The saved-calendar list shows each
 source's status and lets adults enable it, choose a shared color, or remove it.
 Removing a Google calendar only removes it from Family Hub. Google setup is in
@@ -59,7 +72,7 @@ the [Google Calendar guide](docs/google-calendar.md).
 - Saved weather keys are not returned to the browser. Leave the replacement key
   blank to keep the saved key. The Show replacement key checkbox reveals only
   text you enter, not the saved key.
-- Access separates account controls, backup download, installed version, and
+- Account & data separates account controls, backup download, installed version, and
   restoration. Restore replaces household data and restarts the service. Save a
   current backup first. Updates remain a host-owner operation.
 
@@ -83,7 +96,8 @@ item drafts remain available until the page is reloaded. Personal devices keep
 their native keyboard and do not return automatically.
 
 The host owner must set `FAMILY_HUB_INTEGRATION_KEY` before an adult connects
-AnyList or saves Google OAuth credentials in **Settings → Integrations**.
+AnyList in **Settings → Connections**, or saves Google OAuth credentials in
+**Settings → Calendars → Account connections**.
 AnyList uses an unofficial protocol and needs a live-account check before relying
 on it. See the
 [AnyList setup and limits](docs/anylist.md) and the
