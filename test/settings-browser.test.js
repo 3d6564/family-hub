@@ -21,6 +21,8 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   const household = { name: 'Sample home', timezone: 'UTC', weekStartsOn: 0, theme: 'green', dimEnabled: false, tokenBoardEnabled: false };
   let failWeatherLoad = true, failWeatherSave = false, weatherSaveCount = 0, tokenSaves = 0, screenDeletes = 0, restores = 0, holdSave;
   let failScreenPair = false;
+  let failActivitySave = false, holdActivitySave, failTaskToggle = false, failDashboardLoad = false;
+  const activityRequests = [];
   let googleCalendar = { configured: true, oauthSource: 'environment', appCredentialsSaved: false, oauthClientId: '', keyReady: true, connected: false, enabled: false, calendars: [], selectedCalendarIds: [], state: 'not_connected', lastAttemptAt: null, lastSuccessAt: null, error: null };
   let googleConnects = 0, googleSaves = 0, googleCredentialSaves = 0, googleOAuthSecret = '';
   const pairingRequests = [];
@@ -49,9 +51,17 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     if (route === '/api/me') return json({ user: displayMode ? null : { id: 1, name: 'Sample adult', role: 'adult' }, device: displayMode ? 'Sample wall' : null, household });
     if (route === '/api/version') return json({ version: 'sample-deployment' });
     if (route === '/api/release') return json({ version: '0.3.3', channel: 'release' });
-    if (route === '/api/dashboard') return json({ today: '2026-10-25', routines: [{ id: 1, title: 'Read together', child_id: 2, child_name: 'Sample child', period: 'morning', completed: false }], chores: [{ id: 1, title: 'Set the table', assignee_name: 'Sample child', reward_quarters: 2, completed: false }], plans: [], weather: null });
+    if (route === '/api/dashboard') return failDashboardLoad ? json({ error: 'Sample dashboard unavailable.' }, 503) : json({ today: '2026-10-25', routines: [{ id: 1, title: 'Read together', child_id: 2, child_name: 'Sample child', period: 'morning', completed: false }], chores: [{ id: 1, title: 'Set the table', assignee_name: 'Sample child', reward_quarters: 2, completed: false }], plans: [], weather: null });
     if (route === '/api/calendar/events') return json({ events: [], errors: [] });
     if (route === '/api/tokens') return json({ people: [] });
+    if (route === '/api/routines' && req.method === 'GET') return json([{ id: 1, title: 'Read together', child_ids: [2], child_names: 'Sample child', days: '0,1,2,3,4,5,6', period: 'morning' }]);
+    if (route === '/api/chores' && req.method === 'GET') return json([{ id: 1, title: 'Set the table', assignee_id: 2, assignee_name: 'Sample child', recurrence: 'scheduled', days: '1,2,3,4,5', reward_quarters: 2 }]);
+    if (/^\/api\/(routines|chores)\/\d+\/toggle$/.test(route)) return failTaskToggle ? json({ error: 'Sample completion failure.' }, 502) : json({ ok: true });
+    if ((['/api/chores', '/api/routines', '/api/reminders'].includes(route) && req.method === 'POST') || (/^\/api\/(chores|routines|reminders)\/\d+$/.test(route) && req.method === 'PATCH')) {
+      activityRequests.push({ route, method: req.method, body });
+      if (holdActivitySave) await holdActivitySave;
+      return failActivitySave ? json({ error: 'Sample activity save failure.' }, 502) : json({ ok: true }, req.method === 'POST' ? 201 : 200);
+    }
     if (route === '/api/members') return json(sampleMembers);
     if (route === '/api/integrations/google-calendar/credentials') {
       if (req.method === 'PUT') {
@@ -159,9 +169,16 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   const click = selector => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
   const fill = (selector, value) => evaluate(`(()=>{const input=document.querySelector(${JSON.stringify(selector)});input.value=${JSON.stringify(value)};input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   const tab = name => click(`[data-settings-tab="${name}"]`);
+  const screenshot = async name => {
+    if (!process.env.FAMILY_HUB_TEST_SCREENSHOTS) return;
+    const { data } = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+    fs.mkdirSync(process.env.FAMILY_HUB_TEST_SCREENSHOTS, { recursive: true });
+    fs.writeFileSync(path.join(process.env.FAMILY_HUB_TEST_SCREENSHOTS, `${name}.png`), Buffer.from(data, 'base64'));
+  };
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/#settings` });
   await until(() => evaluate('!!document.querySelector("#settings-tab-screens")')).catch(async error => { throw new Error(`${error.message} ${exceptions.join('; ')} ${await evaluate('document.body.innerText.slice(0,500)')}`); });
+  await screenshot('settings-display-desktop');
 
   await t.test('desktop places appearance, mode, and settings at the rail bottom; mobile keeps header controls', async () => {
     await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
@@ -171,7 +188,8 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     assert.ok(desktop.rects[0].top < desktop.rects[1].top && desktop.rects[1].top < desktop.rects[2].top, `Controls must follow Appearance, mode, Settings order: ${JSON.stringify(desktop)}`);
     assert.ok(desktop.styles.every(style => style.border === 'none' && style.background === 'rgba(0, 0, 0, 0)' && style.color === desktop.styles[0].color), `Rail controls must share the unboxed navigation style: ${JSON.stringify(desktop.styles)}`);
     assert.equal(new Set(desktop.iconBounds.map(icon => `${icon.width}x${icon.height}`)).size, 1, `Left-rail icons must use one visible box: ${JSON.stringify(desktop.iconBounds)}`);
-    assert.ok(desktop.iconBounds.every(icon => icon.width === 28 && icon.height === 28 && icon.strokeWidth === '1.8px'), `Rail icons must share the same size and stroke: ${JSON.stringify(desktop.iconBounds)}`);
+    assert.ok(desktop.iconBounds.every(icon => icon.width === 22 && icon.height === 22 && icon.strokeWidth === '1.65px'), `Rail icons must share the settings icons' lighter stroke and a compact size: ${JSON.stringify(desktop.iconBounds)}`);
+    assert.equal(await evaluate('getComputedStyle(document.querySelector("#settings-tabs svg")).strokeWidth'), desktop.iconBounds[0].strokeWidth);
     assert.match(desktop.themeLabel, /Theme$/);
     assert.equal(desktop.modeLabel, desktop.pressed === 'true' ? '"Light"' : '"Dark"');
     assert.equal(desktop.accountIconVisible, true);
@@ -213,11 +231,12 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   });
 
   await t.test('drafts survive unrelated reloads and navigation cancellation', async () => {
-    await tab('integrations');
-    assert.equal(await evaluate('document.querySelector("#settings-panel-calendars").contains(document.querySelector("#calendar-feed-form"))'), false);
+    await tab('calendars');
+    assert.equal(await evaluate('document.querySelector("#settings-panel-calendars").contains(document.querySelector("#calendar-feed-form"))'), true);
     await click('#calendar-add-button');
     assert.equal(await evaluate('document.querySelector("#calendar-type-picker").hidden'), false);
     await click('#calendar-type-picker [data-calendar-type="ical"]');
+    assert.match(await evaluate('document.querySelector("#ical-calendar-source").textContent'), /Secret address in iCal format/);
     assert.equal(await evaluate('document.querySelector("#ical-calendar-source").hidden'), false);
     assert.match(await evaluate('document.querySelector("#calendar-inventory").textContent'), /Sample calendar/);
     assert.match(await evaluate('document.querySelector("#calendar-inventory").textContent'), /Enabled/);
@@ -267,6 +286,29 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     assert.equal(await evaluate('document.querySelector("[name=displayTitle]").value'), 'Draft title');
     acceptDialog = true; await tab('screens'); acceptDialog = false;
     assert.equal(await evaluate('document.querySelector("[name=displayTitle]").value'), '');
+  });
+
+  await t.test('editing a saved iCal feed hides its URL and returns to its calendar row', async () => {
+    await tab('calendars');
+    await click('[aria-label="Edit Another sample calendar"]');
+    assert.equal(await evaluate('document.querySelector("#calendar-feed-form [name=url]").value'), '');
+    assert.equal(await evaluate('document.querySelector("#calendar-type-back").hidden'), true);
+    assert.equal(await evaluate('document.querySelector("#calendar-overview").hidden'), true);
+    await screenshot('settings-edit-ical-desktop');
+    await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 1000, deviceScaleFactor: 1, mobile: false });
+    assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false);
+    await screenshot('settings-edit-ical-phone');
+    await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await fill('#calendar-feed-form [name=name]', 'Renamed sample calendar');
+    await click('#calendar-dialog-close');
+    assert.match(dialogs.at(-1), /Discard unsaved/);
+    assert.equal(await evaluate('document.querySelector("#calendar-config-dialog").hidden'), false);
+    await evaluate('document.querySelector("#calendar-feed-form [name=name]").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
+    assert.equal(await evaluate('document.querySelector("#calendar-config-dialog").hidden'), false);
+    await evaluate('document.querySelector("#calendar-feed-form").requestSubmit()');
+    await until(() => evaluate('document.querySelector("#calendar-config-dialog").hidden'));
+    assert.equal(await evaluate('document.activeElement.getAttribute("aria-label")'), 'Edit Renamed sample calendar');
+    assert.match(await evaluate('document.querySelector("#calendar-inventory").textContent'), /Renamed sample calendar/);
   });
 
   await t.test('reconnecting an existing screen is easy to select and retains the draft on failure', async () => {
@@ -337,13 +379,22 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   });
 
   await t.test('Google Calendar connection and calendar selection work', async () => {
-    await tab('integrations');
+    await tab('calendars');
     await until(() => evaluate('!!document.querySelector("#google-oauth-credentials-form")'));
     await until(() => evaluate('!!document.querySelector("#anylist-integration")'));
     assert.equal(await evaluate('document.querySelector("#anylist-integration").parentElement.id'), 'integrations-grid');
-    assert.equal(await evaluate('[...document.querySelector("#integrations-grid").children].map(card=>card.id).join(",")'), 'calendar-integration,anylist-integration');
-    assert.equal(await evaluate('[...document.querySelectorAll("#integrations-grid > .integration-card")].length'), 2);
+    assert.equal(await evaluate('[...document.querySelector("#integrations-grid").children].map(card=>card.id).join(",")'), 'anylist-integration');
+    await click('[data-calendar-view="connections"]');
+    assert.equal(await evaluate('document.querySelector("#calendar-inventory").hidden'), true);
+    await click('#calendar-manage-google');
+    assert.equal(await evaluate('document.querySelector("#calendar-dialog-title").textContent'), 'Manage Google connection');
+    await click('#calendar-dialog-close');
+    assert.equal(await evaluate('document.activeElement.id'), 'calendar-manage-google');
+    await click('#calendar-return-inventory');
+    assert.equal(await evaluate('document.querySelector("#calendar-inventory").hidden'), false);
+    await screenshot('settings-calendars-desktop');
     await click('#calendar-add-button');
+    await screenshot('settings-add-calendar-desktop');
     assert.equal(await evaluate('document.querySelector("#calendar-type-picker").hidden'), false);
     assert.deepEqual(await evaluate('[...document.querySelectorAll("#calendar-type-picker [data-calendar-type]")].map(button=>button.dataset.calendarType)'), ['ical', 'google']);
     await click('#calendar-type-picker [data-calendar-type="google"]');
@@ -352,11 +403,13 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     assert.equal(await evaluate('document.querySelector("#google-calendar-status").textContent'), 'Not connected.');
     assert.equal(await evaluate('document.querySelector("#google-calendar-connect").disabled'), false);
     assert.equal(await evaluate('document.querySelector("#google-calendar-credential-source").textContent'), 'Using the host environment fallback.');
+    await click('#google-credentials-details summary');
     await fill('#google-oauth-credentials-form [name=clientId]', 'app-client-id');
     await fill('#google-oauth-credentials-form [name=clientSecret]', 'app-client-secret');
     assert.equal(googleCredentialSaves, 0);
     await click('#google-oauth-credentials-form button[type=submit]');
     await until(() => googleCredentialSaves === 1);
+    await until(() => evaluate('document.querySelector("#google-oauth-credentials-form [name=clientSecret]").value === ""'));
     assert.equal(googleCredentialSaves, 1);
     assert.equal(googleOAuthSecret, 'app-client-secret');
     assert.equal(await evaluate('document.querySelector("#google-oauth-credentials-form [name=clientId]").value'), 'app-client-id');
@@ -383,10 +436,17 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     assert.deepEqual(googleCalendar.selectedCalendarIds, ['primary']);
     assert.equal(googleCalendar.enabled, true);
     assert.equal(googleCalendar.calendars[0].enabled, true);
-    assert.equal(await evaluate('document.querySelector("#calendar-inventory").textContent.includes("Private family calendar")'), true);
+    await until(() => evaluate('document.querySelector("#calendar-inventory").textContent.includes("Private family calendar")'));
     for (const width of [390, 1440]) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+      if (width === 390) assert.equal(await evaluate('document.querySelector("#google-credentials-details").open'), false);
       assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false, `Google Calendar settings overflow at ${width}px`);
+      await screenshot(`settings-google-${width}`);
+    }
+    await click('#calendar-dialog-close');
+    for (const width of [390, 1440]) {
+      await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+      await screenshot(`settings-calendars-${width}`);
     }
   });
 
@@ -396,8 +456,10 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
       await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
       for (const section of ['display', 'screens', 'calendars', 'routines', 'weather', 'household', 'access', 'integrations']) {
         await tab(section);
-        const bounds = await evaluate('(()=>{const tabs=[...document.querySelectorAll("[role=tab]")].map(node=>node.getBoundingClientRect());const grid=document.querySelector(".settings-grid").getBoundingClientRect();const panel=document.querySelector("#settings-panel-"+document.querySelector(".settings-grid").dataset.settingsTab).getBoundingClientRect();return {tabsFit:tabs.every(rect=>rect.left>=0&&rect.right<=innerWidth),grid:grid.width,panel:panel.width,overflow:document.documentElement.scrollWidth>innerWidth};})()');
+        const bounds = await evaluate('(()=>{const tabs=[...document.querySelectorAll("[role=tab]")].map(node=>node.getBoundingClientRect());const gridNode=document.querySelector(".settings-grid");const grid=gridNode.getBoundingClientRect();const style=getComputedStyle(gridNode);const panel=document.querySelector("#settings-panel-"+gridNode.dataset.settingsTab).getBoundingClientRect();return {tabsFit:tabs.every(rect=>rect.left>=0&&rect.right<=innerWidth),grid:Math.min(1120,grid.width-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight)),panel:panel.width,overflow:document.documentElement.scrollWidth>innerWidth};})()');
         assert.equal(bounds.tabsFit, true, `${section} tabs at ${width}`); assert.equal(bounds.overflow, false, `${section} overflow at ${width}`); assert.ok(Math.abs(bounds.grid - bounds.panel) < 2, `${section} width at ${width}`);
+        await until(async () => await evaluate('document.querySelector("#settings-tabs").getAttribute("aria-orientation")') === (width > 900 ? 'vertical' : 'horizontal'));
+        if (section === 'display' && width === 390) await screenshot('settings-display-phone');
         if (section === 'integrations') {
           const columns = await evaluate('getComputedStyle(document.querySelector("#integrations-grid")).gridTemplateColumns.split(" ").filter(Boolean).length');
           assert.equal(columns, width >= 900 ? 2 : 1, `integration card columns at ${width}`);
@@ -407,6 +469,11 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     await tab('display');
     await evaluate('document.querySelector("#settings-tab-display").focus();document.querySelector("#settings-tab-display").dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowRight",bubbles:true}))');
     assert.equal(await evaluate('document.activeElement.dataset.settingsTab'), 'screens');
+    await tab('display');
+    await click('#theme-toggle');
+    assert.equal(await evaluate('document.body.classList.contains("display-dim")'), true);
+    await screenshot('settings-display-dark');
+    await click('#theme-toggle');
   });
 
   await t.test('AnyList setup saves explicitly and does not retain the sign-in password', async () => {
@@ -444,6 +511,13 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
       assert.equal(bounds.overflow, false, `Lists overflow at ${width}`); assert.equal(bounds.visible, true);
       if (width > 760) { assert.equal(bounds.navLeft, 0); assert.equal(bounds.navTop, 0); assert.equal(bounds.navWidth, 88); assert.ok(bounds.listLeft >= 88); }
       else { assert.ok(bounds.navTop >= 930); assert.ok(bounds.listWidth <= width); }
+      if ([390, 1440].includes(width)) await screenshot(`shared-lists-${width}`);
+      assert.ok(await evaluate('document.querySelector("#list-add-form button").getBoundingClientRect().height >= 44'));
+      if (width === 1440) {
+        await click('#theme-toggle');
+        await screenshot('shared-lists-dark');
+        await click('#theme-toggle');
+      }
     }
     await evaluate('document.querySelector("#list-add-form [name=name]").focus()');
     assert.equal(await evaluate('document.querySelector("#kiosk-keyboard").hidden'), true);
@@ -467,6 +541,128 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     acceptDialog = true; await click('[aria-label="Delete completed item Milk"]'); acceptDialog = false;
     await until(() => evaluate('!document.querySelector("[data-list-item=milk]")'));
     assert.equal(listItems.some(item => item.id === 'milk'), false);
+  });
+
+  await t.test('task forms preserve drafts, retain errors, block duplicate saves, and cancel consistently', async () => {
+    await click('[data-nav="chores"]');
+    await fill('#chore-form [name=title]', 'Sample new chore');
+    await evaluate('document.querySelector("#chore-form [name=recurrence]").value="scheduled";document.querySelector("#chore-form [name=recurrence]").dispatchEvent(new Event("change",{bubbles:true}))');
+    await fill('#chore-form [name=days]', 'm-f');
+    failActivitySave = true;
+    await click('#chore-form .primary');
+    await until(() => evaluate('document.querySelector("#chore-form .form-status").textContent.includes("Sample activity save failure")'));
+    await new Promise(resolve => setTimeout(resolve, 2700));
+    assert.match(await evaluate('document.querySelector("#chore-form .form-status").textContent'), /not saved/);
+    assert.equal(await evaluate('document.querySelector("#chore-form [name=title]").value'), 'Sample new chore');
+    await click('[data-nav="lists"]');
+    assert.equal(await evaluate('document.body.dataset.view'), 'chores');
+    assert.match(dialogs.at(-1), /Discard unsaved/);
+    for (const width of [390, 1440]) {
+      await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+      assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false);
+      await screenshot(`shared-chores-${width}`);
+    }
+    failActivitySave = false;
+    let release; holdActivitySave = new Promise(resolve => { release = resolve; });
+    const count = activityRequests.length;
+    await click('#chore-form .primary');
+    await until(() => activityRequests.length === count + 1);
+    await evaluate('document.querySelector("#chore-form").requestSubmit()');
+    assert.equal(activityRequests.length, count + 1);
+    assert.equal(await evaluate('document.querySelector("#chore-form").getAttribute("aria-busy")'), 'true');
+    await click('[data-nav="lists"]');
+    assert.equal(await evaluate('document.body.dataset.view'), 'chores');
+    release(); holdActivitySave = null;
+    await until(() => evaluate('!document.querySelector("#chore-form").hasAttribute("aria-busy")'));
+    await until(() => evaluate('document.querySelector("#chore-form [name=title]").value === ""'));
+    assert.equal(await evaluate('document.querySelector("#add-chore-days-field").hidden'), true);
+    assert.equal(activityRequests.at(-1).body.days, 'm-f');
+    await fill('#chore-form [name=title]', 'Discard this chore');
+    await click('#chore-form .activity-form-actions button[type=button]');
+    assert.equal(await evaluate('document.querySelector("#chore-form [name=title]").value'), 'Discard this chore');
+    acceptDialog = true; await click('#chore-form .activity-form-actions button[type=button]'); acceptDialog = false;
+    assert.equal(await evaluate('document.querySelector("#chore-form [name=title]").value'), '');
+
+    failTaskToggle = true; await click('[data-chore]');
+    await until(() => evaluate('document.querySelector("[data-view=chores] .view-action-status").textContent.includes("Sample completion failure")'));
+    assert.equal(await evaluate('document.querySelector("[data-chore]").checked'), false);
+    failTaskToggle = false;
+  });
+
+  await t.test('task editing and reminder dialogs guard Back, Escape, and saving while retaining failures', async () => {
+    await evaluate('[...document.querySelectorAll("[data-view=chores] details")].find(node=>node.querySelector("summary").textContent === "All chores").open=true');
+    await click('[data-edit-chore="1"]');
+    await fill('#edit-item-title', 'Updated sample chore');
+    failActivitySave = true;
+    await click('#edit-item-form .primary');
+    await until(() => evaluate('document.querySelector("#edit-item-form .form-status").textContent.includes("not saved")'));
+    await click('[data-close-edit]');
+    assert.equal(await evaluate('document.querySelector("#edit-item-dialog").open'), true);
+    await evaluate('document.querySelector("#edit-item-dialog").dispatchEvent(new Event("cancel",{cancelable:true}))');
+    assert.equal(await evaluate('document.querySelector("#edit-item-dialog").open'), true);
+    failActivitySave = false;
+    await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 1000, deviceScaleFactor: 1, mobile: false });
+    assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false);
+    await screenshot('shared-task-editor-phone');
+    await click('#edit-item-form .primary');
+    await until(() => evaluate('!document.querySelector("#edit-item-dialog").open')).catch(async error => {
+      throw new Error(`${error.message} ${await evaluate('document.querySelector("#edit-item-form").outerHTML')} ${exceptions.join("; ")}`);
+    });
+    assert.equal(activityRequests.at(-1).body.title, 'Updated sample chore');
+    assert.equal(activityRequests.at(-1).body.rewardAmount, 0.5);
+    assert.equal(await evaluate('document.activeElement.dataset.editChore'), '1');
+    await evaluate('[...document.querySelectorAll("[data-view=chores] details")].find(node=>node.querySelector("summary").textContent === "All chores").open=false');
+
+    await click('[data-nav="calendar"]'); await click('#add-reminder');
+    await fill('#reminder-form [name=title]', 'Sample reminder');
+    await fill('#reminder-form [name=startsAt]', '2026-12-01T10:30');
+    await click('[data-cancel-reminder]');
+    assert.equal(await evaluate('document.querySelector("#reminder-dialog").open'), true);
+    failActivitySave = true; await click('#reminder-form .primary');
+    await until(() => evaluate('document.querySelector("#reminder-form .form-status").textContent.includes("not saved")'));
+    assert.equal(await evaluate('document.querySelector("#reminder-form [name=title]").value'), 'Sample reminder');
+    failActivitySave = false; await click('#reminder-form .primary');
+    await until(() => evaluate('!document.querySelector("#reminder-dialog").open'));
+    await click('#add-reminder');
+    assert.equal(await evaluate('document.querySelector("#reminder-form [name=title]").value'), '');
+    await click('[data-cancel-reminder]');
+  });
+
+  await t.test('routine create and edit preserve child assignment and the shared form states', async () => {
+    await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await click('[data-nav="routines"]');
+    await fill('#routine-form [name=title]', 'Sample new routine');
+    const count = activityRequests.length;
+    await click('#routine-form .primary');
+    await until(() => evaluate('document.querySelector("#routine-form .form-status").textContent.includes("Choose at least one child")'));
+    assert.equal(activityRequests.length, count);
+    await click('#routine-children [name=childId]');
+    await click('#routine-form .primary');
+    await until(() => activityRequests.length === count + 1);
+    await until(() => evaluate('document.querySelector("#routine-form [name=title]").value === ""'));
+    assert.deepEqual(activityRequests.at(-1).body.childIds, [2]);
+    await evaluate('[...document.querySelectorAll("[data-view=routines] details")].find(node=>node.querySelector("summary").textContent === "All routines").open=true');
+    await click('[data-edit-routine="1"]');
+    await fill('#edit-item-title', 'Updated sample routine');
+    await screenshot('shared-routine-editor-desktop');
+    await click('#edit-item-form .primary');
+    await until(() => evaluate('!document.querySelector("#edit-item-dialog").open'));
+    assert.deepEqual(activityRequests.at(-1).body.childIds, [2]);
+    assert.equal(activityRequests.at(-1).body.period, 'morning');
+    await evaluate('[...document.querySelectorAll("[data-view=routines] details")].find(node=>node.querySelector("summary").textContent === "All routines").open=false');
+  });
+
+  await t.test('a successful task save with a failed refresh does not invite duplicate creation', async () => {
+    await click('[data-nav="chores"]');
+    await fill('#chore-form [name=title]', 'Sample saved chore');
+    const count = activityRequests.length;
+    failDashboardLoad = true;
+    await click('#chore-form .primary');
+    await until(() => evaluate('document.querySelector("#chore-form .form-status").textContent.includes("Saved. The display could not refresh")'));
+    assert.equal(activityRequests.length, count + 1);
+    assert.equal(await evaluate('document.querySelector("#chore-form .primary").disabled'), true);
+    assert.equal(await evaluate('document.querySelector("#chore-form [name=title]").value'), '');
+    failDashboardLoad = false;
   });
 
   await t.test('calendar remains within the viewport after the sidebar change', async () => {

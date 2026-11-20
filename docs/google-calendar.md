@@ -25,12 +25,12 @@ connect one Google account and select the calendars to display.
    32-byte value encoded as 64 hexadecimal characters. Keep this key outside the
    database and retain it securely for backup recovery. AnyList uses the same
    key.
-6. In Family Hub, open **Settings → Integrations**, select **Add a calendar**,
+6. In Family Hub, open **Settings → Calendars**, select **Add a calendar**,
    then choose **Google Calendar**. Enter the Google client ID and secret, and
    save them. Family Hub encrypts the client secret with
    `FAMILY_HUB_INTEGRATION_KEY`; it never shows the saved secret again.
    App-stored values take priority over optional environment fallback values.
-7. Connect the Google account. In the calendar settings dialog, add the calendars
+7. Connect the Google account. In the calendar settings page, add the calendars
    you want to show. Set each calendar's enabled state and color in the saved
    calendar list. If you change or remove OAuth credentials later, disconnect
    Google Calendar first.
@@ -55,5 +55,28 @@ key. Keep the key with your other recovery material.
 
 Google may require consent-screen verification for calendar access. While an
 external app remains in testing mode, Google can expire refresh tokens. If
-calendar updates stop, check the connection status in Integrations and reconnect
+calendar updates stop, check **Calendars → Account connections** and reconnect
 the account.
+
+## Use a private iCal feed instead
+
+Private HTTPS iCal URLs work without Google OAuth or its Testing-mode expiry.
+In Google Calendar on a desktop browser, open **Settings**, select the calendar,
+then open **Integrate calendar → Secret address in iCal format**. This option
+may be unavailable for managed accounts.
+
+In Family Hub, open **Settings → Calendars → Add a calendar → iCal feed**.
+Enter a name and the secret URL, test the connection, then save. Do not make
+the Google calendar public. Repeat for each calendar. Remove duplicate OAuth
+calendars only after checking that the feeds work.
+
+Treat the URL as a password: anyone with it can read the calendar. Family Hub
+does not return saved URLs in calendar settings or to wall displays. Feed URLs
+are stored in the database and included in backups; protect both. Reset an
+exposed URL in Google Calendar, then replace it using **Edit** in Family Hub.
+Editing with a blank URL keeps the saved address. Feeds are read-only and
+updates may take time to appear.
+
+Saved calendars appear in **Calendars**. Use **Account connections → Manage connection**
+for Google account credentials, connection testing, and disconnecting. Calendar
+colors and visibility are separate from account connections.

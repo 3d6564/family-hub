@@ -4,7 +4,7 @@ Family Hub never installs updates automatically.
 
 ## Before updating
 
-1. Download a backup from **Settings > Access**.
+1. Download a backup from **Settings > Account & data**.
 2. Store it privately outside the Docker host.
 3. Record the current image version or Git commit.
 4. Read the target release's setup, migration, and rollback notes.
@@ -51,7 +51,7 @@ For **Backup restore required**:
 
 1. Stop attempts to run the previous image against the migrated database.
 2. Run an image that can open the migrated database.
-3. Restore the pre-update backup from **Settings > Access**.
+3. Restore the pre-update backup from **Settings > Account & data**.
 4. After Family Hub restarts, deploy the previous immutable image.
 5. Confirm health, the calendar, and Settings.
 

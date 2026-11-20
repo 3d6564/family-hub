@@ -1,0 +1,94 @@
+/* Shared controls stay palette-aware and retain 44px touch targets outside Settings. */
+body[data-view]:not([data-view="settings"]) #app > header {
+  background: var(--paper);
+  color: var(--ink);
+  border-bottom: 1px solid var(--line);
+  box-shadow: none;
+}
+body[data-view]:not([data-view="settings"]) #app > header time { font-size: 1rem; font-weight: 500; }
+body[data-view]:not([data-view="settings"]) #app > header .header-actions button { background: transparent; color: var(--ink); border-color: var(--line); }
+body[data-view]:not([data-view="settings"]) #app > nav { background: var(--paper); border-color: var(--line); }
+body[data-view]:not([data-view="settings"]) #app > nav button { color: var(--muted); }
+body[data-view]:not([data-view="settings"]) #app > nav button.active { color: var(--accent); background: var(--bg); }
+.item-form, #reminder-form, #edit-item-form { gap: 16px; }
+.item-form > label, #reminder-form > label, #edit-item-form > label,
+.item-edit-fields > label, .list-add-form > label {
+  display: grid; gap: 6px; color: var(--ink); font-size: .9rem; font-weight: 500;
+}
+.item-form input:not([type="checkbox"]), .item-form select,
+#reminder-form input, #edit-item-form input:not([type="checkbox"]), #edit-item-form select,
+.list-add-form input {
+  min-height: 44px; border-radius: 6px; border-color: var(--line);
+  background: var(--control); padding: 10px 12px; box-shadow: 0 1px 2px #10182805;
+}
+.activity-form-actions, #edit-item-form .dialog-actions {
+  display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap;
+  gap: 8px; padding-top: 16px; border-top: 1px solid var(--line);
+}
+.activity-form-actions button, #edit-item-form .dialog-actions button {
+  width: auto; min-height: 44px; min-width: 100px; flex: none; padding: 10px 16px; border-radius: 6px;
+}
+.activity-form-actions .primary { background: var(--primary-bg); color: #fff; }
+[data-activity-form][aria-busy="true"] { opacity: .75; }
+[data-activity-form] button:disabled { opacity: .55; cursor: default; }
+.view-action-status:empty { display: none; }
+.view-action-status, [data-activity-form] .form-status:not(:empty) {
+  padding: 12px; font-size: .9rem; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--bg); color: var(--ink); margin: 12px 0;
+}
+.view-action-status.error, [data-activity-form] .form-status.error {
+  border-color: color-mix(in srgb,var(--danger) 45%,var(--line));
+  background: color-mix(in srgb,var(--danger) 7%,var(--paper)); color: var(--ink);
+}
+body[data-view="chores"] .view[data-view="chores"],
+body[data-view="routines"] .view[data-view="routines"] { border-radius: 10px; box-shadow: none; }
+.view[data-view="chores"] > .card-title, .view[data-view="routines"] > .card-title,
+#shared-list > .card-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.view[data-view="chores"] .card-title h2, .view[data-view="routines"] .card-title h2,
+#shared-list > .card-title h2 { margin: 0; font-size: 1.4rem; font-weight: 650; letter-spacing: -.025em; }
+.task-description { color: var(--muted); font-size: .9rem; line-height: 1.5; }
+.check-row { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.check-row label { gap: 12px; }
+.check-row input[type="checkbox"] { min-height: 20px; width: 20px; height: 20px; flex: none; accent-color: var(--primary-bg); }
+.check-row small:not(.reward-value) { font-size: .85rem; }
+.check-row label > span { min-width: 0; overflow-wrap: anywhere; }
+.check-row input:checked + span { color: var(--muted); }
+.item-form { padding: 22px 0; border-top: 1px solid var(--line); }
+.item-form > h3 { font-size: 1rem; }
+.item-edit { gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.item-edit-copy small { margin-top: 4px; }
+.item-edit-actions button { border-color: transparent; background: transparent; }
+body[data-view="lists"] #app .layout { max-width: 1500px; }
+#shared-list { border-radius: 10px; box-shadow: none; }
+#shared-list > .card-title { padding-bottom: 18px; border-bottom: 1px solid var(--line); }
+#list-refresh, .list-add-form button { min-height: 44px; border-radius: 6px; padding: 10px 16px; }
+.list-add-form button { flex: none; background: var(--primary-bg); border-color: var(--primary-bg); color: #fff; }
+.list-add-form { gap: 10px; margin: 20px 0; }
+.shared-list-panel { padding: 18px; border-radius: 8px; }
+.shared-list-panel > h3 { font-size: 1.05rem; font-weight: 600; }
+.shared-list-panel:only-child { padding: 0; border: 0; }
+.shared-list-panel:only-child > h3 { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.item-form input[type="checkbox"], #edit-item-form input[type="checkbox"] { accent-color: var(--primary-bg); }
+.shared-list-panel .list-items > h4 { margin: 24px 0 4px; font-size: .8rem; font-weight: 600; color: var(--muted); }
+.list-row { min-height: 48px; }
+.list-row button { color: var(--muted); background: transparent; border-color: transparent; font-size: .85rem; }
+.list-row button:hover { color: var(--danger); border-color: var(--line); }
+#list-status[data-state="ready"], .connection-status[data-state="ready"],
+.connection-status[data-state="pending"] {
+  padding: 0; border: 0; border-radius: 0; background: transparent;
+  color: var(--muted); font-size: .85rem; font-weight: 400;
+}
+#list-status[data-state="error"], .connection-status[data-state="stale"] {
+  padding: 12px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink);
+}
+#list-status[data-state="error"] { border-color: color-mix(in srgb,var(--danger) 45%,var(--line)); background: color-mix(in srgb,var(--danger) 7%,var(--paper)); }
+#toast { font-size: .9rem; }
+@media (max-width: 760px) {
+  body[data-view]:not([data-view="settings"]) #app > header time { font-size: .85rem; }
+}
+@media (max-width: 560px) {
+  .shared-list-panel:not(:only-child) { padding: 14px; }
+  .list-add-form { flex-wrap: wrap; align-items: flex-end; }
+  .list-add-form label { flex-basis: 180px; }
+  .activity-form-actions button { min-width: 90px; }
+}

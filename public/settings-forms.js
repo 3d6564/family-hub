@@ -30,7 +30,7 @@ export function createSettingsForms({ confirmDiscard = () => window.confirm('Dis
   }
   function watch(root) {
     for (const form of states.keys()) if (!form.isConnected) states.delete(form);
-    for (const form of root.querySelectorAll('form')) {
+    for (const form of root.matches?.('form') ? [root] : root.querySelectorAll('form')) {
       if (watched.has(form)) continue;
       watched.add(form);
       if (!states.has(form)) mark(form);

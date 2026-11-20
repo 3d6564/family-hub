@@ -30,7 +30,7 @@ revoke provider-side tokens.
 
 ## Connect and use
 
-1. Sign in as an adult. Open **Settings → Integrations → AnyList**.
+1. Sign in as an adult. Open **Settings → Connections → AnyList**.
 2. Enter the AnyList account email and password, then select **Connect / reconnect**.
 3. Choose shared lists, select **Enable shared lists**, and save.
 4. Open **Lists** from the main navigation.
