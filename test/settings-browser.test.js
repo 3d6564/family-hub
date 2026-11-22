@@ -677,6 +677,29 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     }
   });
 
+  await t.test('calendar sidebar rows use compact wide-layout spacing and keep 44px rows elsewhere', async () => {
+    await click('[data-nav="calendar"]');
+    await until(() => evaluate('!!document.querySelector("aside [data-chore]") && !!document.querySelector("aside .routine-period summary")'));
+    const sidebar = () => evaluate('(()=>{const row=document.querySelector("aside [data-chore]").closest(".check-row"),heading=document.querySelector("aside .routine-period summary");return {innerWidth,innerHeight,chorePadding:parseFloat(getComputedStyle(row).paddingTop),choreHeight:row.getBoundingClientRect().height,headingHeight:heading.getBoundingClientRect().height}})()');
+    await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await until(() => evaluate('innerWidth === 1440 && innerHeight === 1000'));
+    const wide = await sidebar();
+    await screenshot('calendar-sidebar-wide-1440');
+    assert.ok(wide.chorePadding <= 2, `Calendar chore rows keep the shared 12px padding: ${JSON.stringify(wide)}`);
+    assert.ok(wide.choreHeight <= 30, `Wide calendar chore rows are too tall: ${JSON.stringify(wide)}`);
+    assert.ok(wide.headingHeight <= 30, `Wide calendar routine headings are too tall: ${JSON.stringify(wide)}`);
+    await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
+    await until(() => evaluate('innerWidth === 1280 && innerHeight === 720'));
+    const short = await sidebar();
+    await screenshot('calendar-sidebar-short-1280');
+    assert.ok(short.choreHeight >= 44, `Calendar chore rows outside the wide layout must keep 44px touch targets: ${JSON.stringify(short)}`);
+    assert.ok(short.headingHeight >= 42, `Calendar routine headings outside the wide layout must keep their height: ${JSON.stringify(short)}`);
+    await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
+    await until(() => evaluate('innerWidth === 390 && innerHeight === 844'));
+    await screenshot('calendar-sidebar-phone-390');
+    await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+  });
+
   await t.test('paired-display Lists has add/check controls but no delete controls', async () => {
     displayMode = true;
     await send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/?paired-test=1#lists` });
