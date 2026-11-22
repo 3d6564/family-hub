@@ -945,6 +945,77 @@ test('token withdrawals keep the earned total and cannot spend more than is avai
   assert.equal(device.person.totalQuarters, 11);
 });
 
+test('an unassigned chore reward is credited only to the chosen child', async (t) => {
+  const previous = process.env.APP_ORIGIN; process.env.APP_ORIGIN = 'http://127.0.0.1';
+  t.after(() => previous === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previous);
+  const db = database(), home = household(db, 'Home'), other = household(db, 'Other');
+  const child = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?,'child')").run(home, 'earn-child@example.test', 'Sample child', 'unused').lastInsertRowid);
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?,'adult')").run(home, 'earn-adult@example.test', 'Sample adult', 'unused').lastInsertRowid);
+  const outsider = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?,'child')").run(other, 'earn-other@example.test', 'Other child', 'unused').lastInsertRowid);
+  const chore = Number(db.prepare("INSERT INTO chores(household_id,title,recurrence,due_on,days,reward_quarters) VALUES (?,?,'daily','0000-01-01','0,1,2,3,4,5,6',4)").run(home, 'Sort recycling').lastInsertRowid);
+  const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); });
+  await new Promise(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const headers = { cookie: `family_user_session=${createSession(db, { householdId: home, userId: adult })}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' };
+  const missing = await fetch(`${base}/api/chores/${chore}/toggle`, { method: 'POST', headers, body: '{}' });
+  assert.equal(missing.status, 400);
+  assert.match((await missing.json()).error, /Choose the child/);
+  assert.equal((await fetch(`${base}/api/chores/${chore}/toggle`, { method: 'POST', headers, body: JSON.stringify({ userId: outsider }) })).status, 404);
+  assert.equal((await fetch(`${base}/api/chores/${chore}/toggle`, { method: 'POST', headers, body: JSON.stringify({ userId: child }) })).status, 200);
+  assert.equal(db.prepare('SELECT assignee_id FROM chores WHERE id=?').get(chore).assignee_id, null);
+  assert.equal(db.prepare('SELECT user_id,quarters FROM token_earnings WHERE chore_id=?').get(chore).user_id, child);
+  const status = await (await fetch(`${base}/api/tokens`, { headers })).json();
+  assert.equal(status.people.find(person => person.id === child).availableQuarters, 4);
+  const history = await (await fetch(`${base}/api/chores/history`, { headers })).json();
+  assert.equal(history[0].assignee_name, 'Sample child');
+  assert.equal((await fetch(`${base}/api/chores/${chore}/toggle`, { method: 'POST', headers, body: '{}' })).status, 200);
+  assert.equal(db.prepare('SELECT reversed_at IS NULL AS earned FROM token_earnings WHERE chore_id=?').get(chore).earned, 0);
+});
+
+test('adults can adjust and reverse token transactions without changing earned totals', async (t) => {
+  const previous = process.env.APP_ORIGIN; process.env.APP_ORIGIN = 'http://127.0.0.1';
+  t.after(() => previous === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previous);
+  const db = database(), home = household(db, 'Home'), other = household(db, 'Other');
+  const child = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?,'child')").run(home, 'child-token@example.test', 'Sample child', 'unused').lastInsertRowid);
+  const adult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?,'adult')").run(home, 'adult-token@example.test', 'Sample adult', 'unused').lastInsertRowid);
+  const otherAdult = Number(db.prepare("INSERT INTO users(household_id,email,name,password_hash,role) VALUES (?,?,?,?,'adult')").run(other, 'other-token@example.test', 'Other adult', 'unused').lastInsertRowid);
+  const server = createApp(db).listen(0); t.after(() => { server.close(); db.close(); });
+  await new Promise(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const headersFor = (token, kind = 'user') => ({ cookie: `family_${kind}_session=${token}`, origin: 'http://127.0.0.1', 'x-csrf-token': '1', 'content-type': 'application/json' });
+  const adultHeaders = headersFor(createSession(db, { householdId: home, userId: adult }));
+  const childHeaders = headersFor(createSession(db, { householdId: home, userId: child }));
+  const deviceHeaders = headersFor(createSession(db, { householdId: home, kind: 'device', deviceName: 'Wall' }), 'device');
+  const otherHeaders = headersFor(createSession(db, { householdId: other, userId: otherAdult }));
+  assert.equal((await fetch(`${base}/api/tokens/adjustments`, { method: 'POST', headers: childHeaders, body: JSON.stringify({ userId: child, quarters: 3, reason: 'Not allowed', requestId: 'child-adjust-1' }) })).status, 403);
+  assert.equal((await fetch(`${base}/api/tokens/adjustments`, { method: 'POST', headers: deviceHeaders, body: JSON.stringify({ userId: child, quarters: 3, reason: 'Not allowed', requestId: 'device-adjust-1' }) })).status, 403);
+  const added = await (await fetch(`${base}/api/tokens/adjustments`, { method: 'POST', headers: adultHeaders, body: JSON.stringify({ userId: child, quarters: 3, reason: 'Correct accidental unpaid withdrawal', requestId: 'adult-adjust-1' }) })).json();
+  assert.equal(added.person.availableQuarters, 3);
+  assert.equal(added.person.totalQuarters, 0);
+  const replay = await (await fetch(`${base}/api/tokens/adjustments`, { method: 'POST', headers: adultHeaders, body: JSON.stringify({ userId: child, quarters: 3, reason: 'Correct accidental unpaid withdrawal', requestId: 'adult-adjust-1' }) })).json();
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.person.availableQuarters, 3);
+  const overdrawn = await fetch(`${base}/api/tokens/adjustments`, { method: 'POST', headers: adultHeaders, body: JSON.stringify({ userId: child, quarters: -4, reason: 'Too much', requestId: 'adult-adjust-over' }) });
+  assert.equal(overdrawn.status, 409);
+  assert.match((await overdrawn.json()).error, /select Reverse/);
+  const withdrawn = await (await fetch(`${base}/api/tokens/withdraw`, { method: 'POST', headers: adultHeaders, body: JSON.stringify({ userId: child, copper: 1, silver: 1, gold: 0, requestId: 'dispense-075' }) })).json();
+  assert.equal(withdrawn.person.availableQuarters, 0);
+  const ledger = await (await fetch(`${base}/api/tokens/ledger?userId=${child}`, { headers: adultHeaders })).json();
+  const withdrawal = ledger.lines.find(line => line.type === 'withdrawal');
+  assert.equal(withdrawal.canReverse, true);
+  assert.equal(withdrawal.amount, '-$0.75');
+  const reversed = await (await fetch(`${base}/api/tokens/reversals`, { method: 'POST', headers: adultHeaders, body: JSON.stringify({ userId: child, transactionType: 'withdrawal', transactionId: withdrawal.id, reason: 'Tokens were not paid', requestId: 'reverse-075' }) })).json();
+  assert.equal(reversed.person.availableQuarters, 3);
+  assert.equal(reversed.person.totalQuarters, 0);
+  assert.equal((await fetch(`${base}/api/tokens/reversals`, { method: 'POST', headers: adultHeaders, body: JSON.stringify({ userId: child, transactionType: 'withdrawal', transactionId: withdrawal.id, reason: 'Tokens were not paid', requestId: 'reverse-again' }) })).status, 409);
+  const after = await (await fetch(`${base}/api/tokens/ledger?userId=${child}`, { headers: adultHeaders })).json();
+  assert.equal(after.lines.find(line => line.id === withdrawal.id && line.type === 'withdrawal').reversed, true);
+  assert.equal(after.lines.some(line => line.type === 'reversal' && line.amount === '$0.75'), true);
+  const displayLedger = await (await fetch(`${base}/api/tokens/ledger?userId=${child}`, { headers: deviceHeaders })).json();
+  assert.equal(displayLedger.lines.some(line => line.canReverse || line.reason), false);
+  assert.equal((await fetch(`${base}/api/tokens/reversals`, { method: 'POST', headers: otherHeaders, body: JSON.stringify({ userId: child, transactionType: 'withdrawal', transactionId: withdrawal.id, reason: 'Wrong household', requestId: 'other-reverse' }) })).status, 404);
+});
+
 test('an empty hub can be restored or started before sign-in', async (t) => {
   const previous = process.env.APP_ORIGIN; process.env.APP_ORIGIN = 'http://127.0.0.1';
   t.after(() => previous === undefined ? delete process.env.APP_ORIGIN : process.env.APP_ORIGIN = previous);

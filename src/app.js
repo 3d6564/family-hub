@@ -8,7 +8,7 @@ import { restoreDatabase, writeBackup } from './backup.js';
 import { approveDisplayPairing, authenticate, claimDisplayPairing, clearUserSessionCookie, createDisplayPairing, createPairingCode, createSession, csrf, DEVICE_COOKIE, digest, hashPassword, parseCookies, requireAdult, requireUser, setSessionCookie, USER_COOKIE, verifyPassword } from './auth.js';
 import { chorePeriod, isChoreDue, localDate, parseDays } from './domain.js';
 import { fetchFeedEvents, validateFeedUrl } from './ical.js';
-import { ensureTokenLedger, postChoreEarning, reverseChoreEarning, tokenLedger, tokenStatus, TokenError, withdrawTokens } from './tokens.js';
+import { adjustTokenBalance, reverseTokenTransaction, ensureTokenLedger, postChoreEarning, reverseChoreEarning, tokenLedger, tokenStatus, TokenError, withdrawTokens } from './tokens.js';
 import { releaseInfo } from './release.js';
 import { createUpdateChecker } from './updates.js';
 import { currentForecast, fetchWeather, weatherProviderIds, weatherRefreshMinutes } from './weather.js';
@@ -219,7 +219,11 @@ export function createApp(db, dependencies = {}) {
       FROM routines r JOIN routine_assignees a ON a.routine_id=r.id JOIN users u ON u.id=a.child_id WHERE r.household_id=? AND r.active=1 ORDER BY r.sort_order,r.id,u.name`).all(today, h).filter((r) => r.days.split(',').includes(String(new Date(`${today}T12:00:00Z`).getUTCDay())));
     const chores = db.prepare('SELECT c.*,u.name assignee_name FROM chores c LEFT JOIN users u ON u.id=c.assignee_id WHERE c.household_id=? AND c.active=1 ORDER BY c.sort_order,c.id').all(h)
       .filter((c) => isChoreDue(c, new Date(), household.timezone))
-      .map((c) => ({ ...c, completed: !!db.prepare('SELECT 1 FROM chore_completions WHERE chore_id=? AND period_key=?').get(c.id, chorePeriod(c.recurrence, new Date(), household.timezone)) }))
+      .map((c) => {
+        const period = chorePeriod(c.recurrence, new Date(), household.timezone);
+        const earner = db.prepare(`SELECT u.name FROM token_earnings te JOIN users u ON u.id=te.user_id WHERE te.chore_id=? AND te.period_key=? AND te.reversed_at IS NULL`).get(c.id, period);
+        return { ...c, completed: !!db.prepare('SELECT 1 FROM chore_completions WHERE chore_id=? AND period_key=?').get(c.id, period), earner_name: earner?.name || null };
+      })
       .filter((c) => c.recurrence !== 'once' || !c.completed);
     const plans = db.prepare('SELECT * FROM family_targets WHERE household_id=? ORDER BY sort_order,id').all(h);
     const dim = db.prepare('SELECT dim_enabled enabled,dim_start start,dim_end end,timezone,theme,display_title displayTitle,token_board_enabled tokenBoardEnabled,routine_morning_start routineMorningStart,routine_afternoon_start routineAfternoonStart,routine_bedtime_start routineBedtimeStart FROM households WHERE id=?').get(h);
@@ -514,7 +518,7 @@ export function createApp(db, dependencies = {}) {
           return false;
         }
         db.prepare('INSERT INTO chore_completions(chore_id,period_key) VALUES (?,?)').run(chore.id, period);
-        postChoreEarning(db, chore, period);
+        postChoreEarning(db, chore, period, req.body?.userId);
         if (chore.recurrence === 'once') db.prepare('UPDATE chores SET active=0 WHERE id=?').run(chore.id);
         return true;
       });
@@ -528,7 +532,7 @@ export function createApp(db, dependencies = {}) {
   });
   app.get('/api/tokens', (req, res) => res.json(tokenStatus(db, req.auth.household_id)));
   app.get('/api/tokens/ledger', (req, res) => {
-    try { res.json(tokenLedger(db, req.auth.household_id, req.query.userId)); }
+    try { res.json(tokenLedger(db, req.auth.household_id, req.query.userId, { canManage: req.auth.kind === 'user' && req.auth.role === 'adult' })); }
     catch (error) { if (error instanceof TokenError) return res.status(error.status).json({ error: error.message }); throw error; }
   });
   app.post('/api/tokens/withdraw', (req, res) => {
@@ -541,8 +545,20 @@ export function createApp(db, dependencies = {}) {
       throw error;
     }
   });
+  for (const [path, correct] of [['adjustments', adjustTokenBalance], ['reversals', reverseTokenTransaction]]) {
+    app.post(`/api/tokens/${path}`, requireAdult, (req, res) => {
+      try {
+        const result = correct(db, { householdId: req.auth.household_id, actorId: req.auth.user_id, userId: req.body.userId, quarters: req.body.quarters, reason: req.body.reason, requestId: req.body.requestId, transactionType: req.body.transactionType, transactionId: req.body.transactionId });
+        emit(req.auth.household_id, 'tasks');
+        res.json(result);
+      } catch (error) {
+        if (error instanceof TokenError) return res.status(error.status).json({ error: error.message });
+        throw error;
+      }
+    });
+  }
   app.get('/api/chores/history', requireAdult, (req, res) => {
-    res.json(db.prepare(`SELECT c.period_key,c.completed_at,h.title,u.name assignee_name FROM chore_completions c JOIN chores h ON h.id=c.chore_id LEFT JOIN users u ON u.id=h.assignee_id WHERE h.household_id=? ORDER BY c.completed_at DESC LIMIT 2000`).all(req.auth.household_id));
+    res.json(db.prepare(`SELECT c.period_key,c.completed_at,h.title,COALESCE(u.name,earner.name) assignee_name FROM chore_completions c JOIN chores h ON h.id=c.chore_id LEFT JOIN users u ON u.id=h.assignee_id LEFT JOIN token_earnings te ON te.chore_id=h.id AND te.period_key=c.period_key AND te.reversed_at IS NULL LEFT JOIN users earner ON earner.id=te.user_id WHERE h.household_id=? ORDER BY c.completed_at DESC LIMIT 2000`).all(req.auth.household_id));
   });
   app.put('/api/plans', requireAdult, (req, res) => {
     if (!Array.isArray(req.body.plans) || req.body.plans.length > 20) return res.status(400).json({ error: 'Plans must be a list.' });
