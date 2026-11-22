@@ -15,10 +15,10 @@ body[data-view="calendar"] aside .lists-view{display:none}
 .list-row small{display:block;white-space:pre-wrap}
 .list-row button{flex:none}
 #list-status{overflow-wrap:anywhere}
-.rail-icon{display:block;flex:none;width:var(--rail-icon-size,1.5rem);height:var(--rail-icon-size,1.5rem);fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.rail-icon{display:block;flex:none;width:var(--rail-icon-size,1.375rem);height:var(--rail-icon-size,1.375rem);fill:none;stroke:currentColor;stroke-width:1.65;stroke-linecap:round;stroke-linejoin:round}
 .rail-icon[hidden],.account-icon{display:none}
 @media(min-width:761px){
-  #app{--rail-icon-size:28px;padding-left:88px}
+  #app{--rail-icon-size:22px;padding-left:88px}
   #app>nav{top:0;right:auto;bottom:0;left:0;width:88px;height:100vh;display:flex;flex-direction:column;justify-content:flex-start;align-items:stretch;gap:6px;padding:12px 6px;border-top:0;border-right:1px solid var(--line);overflow-y:auto}
   #app>nav button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;flex:none;min-width:0;min-height:68px;padding:8px 4px;font-size:.9rem}
   #app>nav button[data-tooltip]::after{display:none}
@@ -28,7 +28,7 @@ body[data-view="calendar"] aside .lists-view{display:none}
 }
 @media(max-width:760px){
   #app>nav button{min-width:64px;flex:1}
-  #app>nav .rail-icon{width:1rem;height:1rem}
+  #app>nav .rail-icon{width:1.25rem;height:1.25rem}
   #app>header .header-actions #theme-toggle .rail-icon{width:1.4rem;height:1.4rem}
   body[data-view="lists"] .lists-view.mobile-active{display:block}
 }

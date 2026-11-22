@@ -4,15 +4,16 @@
 
 Keep one settings tab for each independently configured household concern:
 
-- **Display**: header title, color palette, and scheduled dark mode.
-- **Screens**: screen pairing and reconnect approval, paired display resolutions, last-seen status, and calendar previews.
-- **Calendars**: week-start preference.
+- **Display**: header title, color palette, token-balance visibility, and scheduled dark mode.
+- **Screens**: screen pairing, reconnect approval, access revocation, paired display resolutions, last-seen status, and calendar previews.
+- **Calendars**: saved private or public iCal feeds, Google calendars, account connections, and the week-start preference.
 - **Routines**: household start times for Morning, Afternoon, and Bedtime.
 - **Weather**: forecast visibility, location, units, day count, refresh interval, display choices, and one saved key per provider.
 - **Household**: family members and their roles.
-- **Access**: passwords, paired-display revocation, and sign-out.
-- **Integrations**: public iCal feeds and Google Calendar in one Calendars card,
-  plus separate cards for other outside-service connections such as AnyList.
+- **Account & data**: passwords, sign-out, backup download, installed version,
+  and household restoration.
+- **Connections**: outside-service connections such as AnyList. Calendar
+  connections remain under Calendars.
 
 Weather refresh defaults to 30 minutes for new and existing households. Adults
 can select 15 minutes, 30 minutes, 1 hour, or 3 hours in Settings > Weather.
@@ -21,17 +22,24 @@ displays request the dashboard about every 5 minutes. Faster intervals increase
 provider API use; one refresh can make several requests. Provider failures keep
 the last saved forecast visible.
 
-Calendar sources are managed together in the Integrations tab. **Add a calendar**
-offers a public iCal feed or Google Calendar. Other services have separate cards.
+Calendar sources are managed together under **Settings → Calendars**.
+**Saved calendars** lists the calendars saved in Family Hub, with color,
+visibility, and remove controls. **Account connections → Manage connection**
+opens Google account settings separately from the saved calendars.
+**Add calendar** offers a private or public iCal feed or Google Calendar.
+Calendar add/edit opens on the page with Back and Cancel controls. Saved feed
+URLs stay hidden; leaving the URL blank when editing keeps the saved address.
+Removing a Google calendar does not disconnect the Google account or change
+events at Google. Other services are managed under **Settings → Connections**.
 An available integration shows its connection state, source of truth, selected
 data, and enable controls. Keep planned integrations in this document, not as
 cards in the working settings interface.
 
-The current settings navigation uses a wrapping tab list. Each active section
-uses the full content width. Calendar and Routines remain separate. Screen
-revocation is under Screens; Access groups account controls, backups, installed
-version, and restoration separately. Broader navigation and section organization
-changes are deferred for a later review.
+Settings use a navigation column on desktop and a wrapping tab list above the
+page on phones. Labelled setting rows separate descriptions from controls on
+wide screens and stack on narrow screens. Calendars and Routines remain
+separate sections. Screen revocation is under Screens; Account & data groups
+account controls, backups, installed version, and restoration separately.
 
 Settings forms keep drafts through unrelated refreshes and use explicit saving.
 Weather and calendar connection status is adult-only. Saved weather keys are

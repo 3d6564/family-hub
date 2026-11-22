@@ -59,7 +59,7 @@ export function createListsView({ api, settingsForms, getMe }) {
     const focused = document.activeElement, focusList = focused?.closest('[data-list-id]')?.dataset.listId, focusItem = focused?.dataset.listItem;
     const lists = data.enabled ? data.lists : [];
     $('#list-name').textContent = lists.length === 1 ? lists[0].name : 'Lists';
-    status(!lists.length ? 'No shared lists are enabled. An adult can connect AnyList in Settings → Integrations.' : 'AnyList is the source of truth.', lists.length ? 'ready' : 'empty');
+    status(!lists.length ? 'No shared lists are enabled. An adult can connect AnyList in Settings → Connections.' : 'Changes are shared with AnyList.', lists.length ? 'ready' : 'empty');
     for (const [id, panel] of panels) if (!lists.some(list => list.id === id)) {
       drafts.set(id, panel.input.value); panel.root.remove(); panel.tab.remove(); panels.delete(id);
     }
@@ -199,7 +199,7 @@ export function createListsView({ api, settingsForms, getMe }) {
       settingsForms.watch(root);
     }
     try { renderSettings(await api('/api/integrations/anylist')); }
-    catch (error) { $('#anylist-status').textContent = `${error.message} Reopen Integrations to retry.`; }
+    catch (error) { $('#anylist-status').textContent = `${error.message} Reopen Connections to retry.`; }
   }
 
   wide.addEventListener('change', layout);
