@@ -76,6 +76,18 @@ the [Google Calendar guide](docs/google-calendar.md).
   restoration. Restore replaces household data and restarts the service. Save a
   current backup first. Updates remain a host-owner operation.
 
+Adults can open a child's token ledger to add or subtract available funds in
+$0.25 increments. A reason is required. The chore-earned total stays unchanged,
+and a correction cannot make the available balance negative. Withdrawals and
+manual adjustments can be reversed once. The original line remains visible and
+marked as reversed. Paired displays can still dispense tokens, but they cannot
+adjust or reverse ledger entries.
+
+Completing a chore assigned to anyone does not change that chore. If the chore
+has a reward, choose the child who earned it before the completion is saved.
+The reward is added to that child's available balance. Unchecking the chore
+removes the reward when it has not been withdrawn.
+
 ## Shared lists
 
 **Lists** shows selected lists from one AnyList account. Up to three appear

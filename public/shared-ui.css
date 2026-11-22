@@ -10,22 +10,22 @@ body[data-view]:not([data-view="settings"]) #app > header .header-actions button
 body[data-view]:not([data-view="settings"]) #app > nav { background: var(--paper); border-color: var(--line); }
 body[data-view]:not([data-view="settings"]) #app > nav button { color: var(--muted); }
 body[data-view]:not([data-view="settings"]) #app > nav button.active { color: var(--accent); background: var(--bg); }
-.item-form, #reminder-form, #edit-item-form { gap: 16px; }
-.item-form > label, #reminder-form > label, #edit-item-form > label,
+.item-form, #reminder-form, #edit-item-form, #reward-assignee-form { gap: 16px; }
+.item-form > label, #reminder-form > label, #edit-item-form > label, #reward-assignee-form > label,
 .item-edit-fields > label, .list-add-form > label {
   display: grid; gap: 6px; color: var(--ink); font-size: .9rem; font-weight: 500;
 }
 .item-form input:not([type="checkbox"]), .item-form select,
-#reminder-form input, #edit-item-form input:not([type="checkbox"]), #edit-item-form select,
+#reminder-form input, #edit-item-form input:not([type="checkbox"]), #edit-item-form select, #reward-assignee-form select,
 .list-add-form input {
   min-height: 44px; border-radius: 6px; border-color: var(--line);
   background: var(--control); padding: 10px 12px; box-shadow: 0 1px 2px #10182805;
 }
-.activity-form-actions, #edit-item-form .dialog-actions {
+.activity-form-actions, #edit-item-form .dialog-actions, #reward-assignee-form .dialog-actions {
   display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap;
   gap: 8px; padding-top: 16px; border-top: 1px solid var(--line);
 }
-.activity-form-actions button, #edit-item-form .dialog-actions button {
+.activity-form-actions button, #edit-item-form .dialog-actions button, #reward-assignee-form .dialog-actions button {
   width: auto; min-height: 44px; min-width: 100px; flex: none; padding: 10px 16px; border-radius: 6px;
 }
 .activity-form-actions .primary { background: var(--primary-bg); color: #fff; }
@@ -92,3 +92,31 @@ body[data-view="lists"] #app .layout { max-width: 1500px; }
   .list-add-form label { flex-basis: 180px; }
   .activity-form-actions button { min-width: 90px; }
 }
+
+.token-ledger{gap:0}
+.token-ledger .ledger-summary{gap:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--paper)}
+.token-ledger .ledger-summary div{border:0;border-radius:0;background:transparent;padding:14px 16px}
+.token-ledger .ledger-summary div+div{border-left:1px solid var(--line)}
+.token-ledger .ledger-summary span{font-size:.78rem;font-weight:500}
+.token-ledger .ledger-summary strong{font-size:1.25rem;font-weight:650;letter-spacing:-.02em}
+.ledger-adjust{display:grid;grid-template-columns:minmax(180px,.8fr) minmax(0,1.2fr);gap:28px;align-items:start;padding:22px 0;border-bottom:1px solid var(--line)}
+.ledger-adjust-copy h3{margin:0 0 4px;font-size:.9rem;font-weight:600}
+.ledger-adjust-copy p{margin:0;max-width:280px;color:var(--muted);font-size:.85rem}
+.token-ledger .settings-form{gap:14px;max-width:420px;margin:0}
+.token-ledger .settings-form>label{display:grid;gap:6px;color:var(--ink);font-size:.85rem;font-weight:500}
+.token-ledger .settings-form input{width:100%;min-height:44px;border:1px solid var(--line);border-radius:6px;padding:8px 12px;background:var(--control);box-shadow:0 1px 2px #10182805}
+.token-ledger .settings-form button{width:auto;min-height:44px;justify-self:start;border-radius:6px;padding:8px 14px}
+.token-ledger .form-status{margin:0;font-size:.8rem}
+.token-ledger .ledger-table{font-size:.9rem}
+.token-ledger .ledger-table caption{padding:18px 0 8px;font-size:.9rem;font-weight:600}
+.token-ledger .ledger-table th{border-bottom:1px solid var(--line);font-size:.75rem;font-weight:600;letter-spacing:.01em}
+.token-ledger .ledger-table td{padding:12px 8px}
+.token-ledger .ledger-table tbody tr:nth-child(even){background:transparent}
+.token-ledger .ledger-table td.credit{color:var(--ink);font-weight:600}
+.token-ledger .is-reversed{color:var(--muted)}
+.token-ledger .ledger-reason{display:block;color:var(--muted);font-size:.78rem;font-weight:400}
+.ledger-reverse{width:auto;min-height:44px;padding:8px 2px;border:0;background:transparent;box-shadow:none;color:var(--accent);font-size:.8rem;font-weight:600}
+.ledger-reverse:hover{text-decoration:underline}
+.reward-dialog{width:min(460px,calc(100% - 28px))}
+.reward-dialog .muted{margin:0}
+@media(max-width:700px){.ledger-adjust{grid-template-columns:1fr;gap:12px}.token-ledger .ledger-summary{grid-template-columns:1fr}.token-ledger .ledger-summary div+div{border-left:0;border-top:1px solid var(--line)}}
