@@ -152,6 +152,31 @@ function readJsonArray(value) {
   } catch { return []; }
 }
 
+/** Return fixed recovery text for a rejected token request. Provider descriptions and unknown codes are never included. */
+function tokenFailure(status, body, operation) {
+  const refresh = operation === 'refresh';
+  if (status >= 500 || status === 429) return 'Google authorization is temporarily unavailable. Try again later.';
+  // Provider descriptions are never shown. A short lowercase OAuth error code is shown, since it helps diagnose the failure.
+  const code = typeof body.error === 'string' && /^[a-z_]{3,40}$/.test(body.error) ? ` (Google error: ${body.error})` : '';
+  if (body.error === 'invalid_grant') return refresh
+    ? `Google authorization expired or was revoked. Disconnect and reconnect Google Calendar. In Google Testing mode, calendar authorization normally expires after seven days.${code}`
+    : `Google sign-in expired or was already used. Try Connect Google account again.${code}`;
+  if (body.error === 'invalid_client' || body.error === 'unauthorized_client') {
+    return `Google rejected the OAuth client credentials. Check the client ID and secret in Settings → Calendars → Account connections.${code}`;
+  }
+  if (body.error === 'invalid_request') return refresh
+    ? `Google rejected the stored authorization request. Reconnect Google Calendar. If this repeats, check the OAuth client settings and redirect URI in Google Cloud.${code}`
+    : `Google rejected the sign-in request. Check the OAuth client settings and redirect URI in Google Cloud, then try again.${code}`;
+  return refresh
+    ? `Google authorization could not be completed. Reconnect Google Calendar. If this repeats, check the OAuth client settings in Google Cloud.${code}`
+    : `Google sign-in could not be completed. Try Connect Google account again.${code}`;
+}
+
+/** Escape text before it is placed in the HTML popup page. */
+function escapeText(value) {
+  return String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+}
+
 /** Keep Google refresh tokens encrypted and return selected calendars as normalized household events. */
 export function createGoogleCalendarConnector(db, options = {}) {
   const envClientId = options.clientId ?? process.env.GOOGLE_OAUTH_CLIENT_ID;
@@ -230,22 +255,13 @@ export function createGoogleCalendarConnector(db, options = {}) {
   }
 
   async function requestTokens(values, credentials) {
+    const operation = values.grant_type === 'authorization_code' ? 'connect' : 'refresh';
     const { status, body } = await fetchJson(GOOGLE_TOKEN_URL, {
       method: 'POST',
       headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
       body: tokenForm(values, credentials),
     });
-    if (status < 200 || status >= 300) {
-      // Allowlist recovery messages; provider descriptions can contain private values.
-      const message = status >= 500 || status === 429
-        ? 'Google authorization is temporarily unavailable. Try again later.'
-        : body.error === 'invalid_grant'
-          ? 'Google authorization expired or was revoked. Disconnect and reconnect Google Calendar. In Google Testing mode, calendar authorization normally expires after seven days.'
-          : body.error === 'invalid_client' || body.error === 'unauthorized_client'
-            ? 'Google rejected the OAuth client credentials. Check the client ID and secret in Settings → Calendars → Account connections.'
-            : 'Google authorization could not be completed. Check the Google connection settings and try again.';
-      throw new GoogleCalendarError(message, 502);
-    }
+    if (status < 200 || status >= 300) throw new GoogleCalendarError(tokenFailure(status, body, operation), 502);
     if (typeof body.access_token !== 'string' || body.access_token.length > 8192 || !Number.isFinite(Number(body.expires_in)) || Number(body.expires_in) <= 0) {
       throw new GoogleCalendarError('Google authorization returned invalid credentials.', 502);
     }
@@ -277,13 +293,13 @@ export function createGoogleCalendarConnector(db, options = {}) {
       token = await accessToken(householdId, true);
       result = await fetchJson(url, { headers: { Accept: 'application/json', Authorization: `Bearer ${token}` } });
     }
-    if (result.status < 200 || result.status >= 300) throw new GoogleCalendarError('Google Calendar data could not be loaded.', 502);
+    if (result.status < 200 || result.status >= 300) throw new GoogleCalendarError('Google Calendar data could not be loaded. Check the connection and try again.', 502);
     return result.body;
   }
 
   async function apiJsonWithToken(url, token) {
     const result = await fetchJson(url, { headers: { Accept: 'application/json', Authorization: `Bearer ${token}` } });
-    if (result.status < 200 || result.status >= 300) throw new GoogleCalendarError('Google Calendar data could not be loaded.', 502);
+    if (result.status < 200 || result.status >= 300) throw new GoogleCalendarError('Google Calendar data could not be loaded. Check the connection and try again.', 502);
     return result.body;
   }
 
@@ -408,14 +424,15 @@ export function createGoogleCalendarConnector(db, options = {}) {
       .get(request.sessionId, request.householdId, request.userId, new Date().toISOString());
   }
 
+  /** Finish an OAuth callback. Provider rejections carry a fixed recovery reason; no provider text is included. */
   async function complete(query) {
     const state = typeof query?.state === 'string' && query.state.length <= 128 ? query.state : '';
     const request = pending.get(state);
-    if (!request) return 'failed';
+    if (!request) return { status: 'failed' };
     pending.delete(state);
-    if (request.expiresAt <= Date.now() || !activeAdultSession(request)) return 'failed';
-    if (typeof query.error === 'string') return query.error === 'access_denied' ? 'cancelled' : 'failed';
-    if (typeof query.code !== 'string' || !query.code || query.code.length > 4096) return 'failed';
+    if (request.expiresAt <= Date.now() || !activeAdultSession(request)) return { status: 'failed' };
+    if (typeof query.error === 'string') return { status: query.error === 'access_denied' ? 'cancelled' : 'failed' };
+    if (typeof query.code !== 'string' || !query.code || query.code.length > 4096) return { status: 'failed' };
 
     let tokens;
     try {
@@ -425,8 +442,10 @@ export function createGoogleCalendarConnector(db, options = {}) {
         code_verifier: request.verifier,
         redirect_uri: request.redirectUri,
       }, request.credentials);
-    } catch { return 'failed'; }
-    if (typeof tokens.refresh_token !== 'string' || !tokens.refresh_token || tokens.refresh_token.length > 8192) return 'failed';
+    } catch (error) {
+      return error instanceof GoogleCalendarError ? { status: 'failed', message: error.message } : { status: 'failed' };
+    }
+    if (typeof tokens.refresh_token !== 'string' || !tokens.refresh_token || tokens.refresh_token.length > 8192) return { status: 'failed' };
 
     const credentials = seal(tokens.refresh_token, key, request.householdId), now = new Date().toISOString();
     db.prepare(`INSERT INTO google_calendar_connections(household_id,credentials,last_attempt_at)
@@ -440,12 +459,12 @@ export function createGoogleCalendarConnector(db, options = {}) {
       const calendars = await listCalendars(request.householdId, tokens.access_token);
       saveCalendars(request.householdId, calendars, [], false);
       notify(request.householdId);
-      return 'success';
+      return { status: 'success' };
     } catch {
       db.prepare('UPDATE google_calendar_connections SET last_error=?,updated_at=CURRENT_TIMESTAMP WHERE household_id=?')
         .run('Google Calendar connected, but the calendar list could not load. Test the connection in Settings → Calendars → Account connections.', request.householdId);
       notify(request.householdId);
-      return 'partial';
+      return { status: 'partial' };
     }
   }
 
@@ -540,7 +559,7 @@ export function createGoogleCalendarConnector(db, options = {}) {
     const calendars = readJsonArray(row.calendars_json), selected = new Set(readJsonArray(row.selected_calendar_ids_json));
     const chosen = calendars.filter(calendar => selected.has(calendar.id) && (typeof calendar.enabled === 'boolean' ? calendar.enabled : !!row.enabled)).slice(0, MAX_CALENDARS);
     const events = [], errors = [];
-    let loaded = false;
+    let loaded = false, failureReason = '';
     for (const calendar of chosen) {
       const cacheKey = `${householdId}:${calendar.id}:${from.toISOString()}:${to.toISOString()}`;
       const previous = eventsCache.get(cacheKey);
@@ -548,16 +567,18 @@ export function createGoogleCalendarConnector(db, options = {}) {
         const result = await calendarEvents(householdId, calendar, from, to);
         events.push(...result.events);
         loaded ||= !result.cached;
-      } catch {
+      } catch (error) {
         if (previous) events.push(...previous.events);
-        errors.push({ calendar: calendar.name, message: `Could not load ${calendar.name} from Google Calendar. Check the connection and try again.` });
+        const reason = error instanceof GoogleCalendarError ? error.message : 'Check the connection and try again.';
+        failureReason ||= reason;
+        errors.push({ calendar: calendar.name, message: `Could not load ${calendar.name} from Google Calendar. ${reason}` });
       }
     }
     if (loaded || errors.length) {
       const attemptedAt = new Date().toISOString();
       db.prepare(`UPDATE google_calendar_connections SET last_attempt_at=?,last_success_at=CASE WHEN ? THEN ? ELSE last_success_at END,
         last_error=?,updated_at=CURRENT_TIMESTAMP WHERE household_id=?`)
-        .run(attemptedAt, loaded ? 1 : 0, attemptedAt, errors.length ? 'Some Google calendars could not load. Check Settings → Calendars → Account connections.' : null, householdId);
+        .run(attemptedAt, loaded ? 1 : 0, attemptedAt, errors.length ? `Some Google calendars could not load. ${failureReason}` : null, householdId);
     }
     return { events, errors };
   }
@@ -593,13 +614,15 @@ export function createGoogleCalendarConnector(db, options = {}) {
     return settings(householdId);
   }
 
+  /** Build the popup page. It sends a fixed status and reason to the opener, then closes. */
   function callbackPage(result) {
     const nonce = crypto.randomBytes(18).toString('base64url');
-    const message = JSON.stringify({ type: 'family-hub-google-calendar-oauth', status: result });
-    const text = result === 'success' ? 'Google Calendar connected. Return to Family Hub.'
-      : result === 'partial' ? 'Google Calendar connected, but its calendar list needs a refresh. Return to Family Hub.'
-        : result === 'cancelled' ? 'Google Calendar connection was cancelled. Return to Family Hub.'
-          : 'Google Calendar could not connect. Return to Family Hub and try again.';
+    const reason = typeof result.message === 'string' ? result.message.slice(0, 400) : '';
+    const message = JSON.stringify({ type: 'family-hub-google-calendar-oauth', status: result.status, reason }).replace(/</g, '\\u003c');
+    const text = result.status === 'success' ? 'Google Calendar connected. Return to Family Hub.'
+      : result.status === 'partial' ? 'Google Calendar connected, but its calendar list needs a refresh. Return to Family Hub.'
+        : result.status === 'cancelled' ? 'Google Calendar connection was cancelled. Return to Family Hub.'
+          : `Google Calendar could not connect. ${escapeText(reason || 'Return to Family Hub and try again.')}`;
     return {
       nonce,
       html: `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Google Calendar</title><p>${text}</p><a href="/">Return to Family Hub</a><script nonce="${nonce}">if(window.opener){window.opener.postMessage(${message},location.origin);window.close()}</script></html>`,
