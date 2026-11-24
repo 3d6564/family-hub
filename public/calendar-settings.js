@@ -703,7 +703,7 @@ export function createCalendarSettings({ api, settingsForms, getMe, onEventsChan
         $('#google-credentials-details', googleSource).open = false;
         await load();
         renderGoogleSetup();
-      } else setMessage($('#google-calendar-status', googleSource), event.data.status === 'cancelled' ? 'Google Calendar connection was cancelled.' : 'Google Calendar could not connect. Try again.', true);
+      } else setMessage($('#google-calendar-status', googleSource), event.data.status === 'cancelled' ? 'Google Calendar connection was cancelled.' : (typeof event.data.reason === 'string' && event.data.reason.trim() ? event.data.reason.trim().slice(0, 400) : 'Google Calendar could not connect. Try again.'), true);
     });
     settingsForms.watch(dialog);
     renderInventory();

@@ -54,9 +54,30 @@ Backups include the encrypted client secret and refresh token, not the encryptio
 key. Keep the key with your other recovery material.
 
 Google may require consent-screen verification for calendar access. While an
-external app remains in testing mode, Google can expire refresh tokens. If
-calendar updates stop, check **Calendars → Account connections** and reconnect
-the account.
+external app remains in testing mode, Google can expire refresh tokens. The
+"expired or was revoked" message points to this case. Reconnect the account in
+**Calendars → Account connections**. The message says authorization normally
+expires after seven days; check Google's current OAuth documentation for the
+exact limit. If you need access that does not depend on Testing-mode expiry, use
+a private iCal feed.
+
+## Recovery messages
+
+Family Hub shows one of these messages when Google rejects a request. Google's
+free-text descriptions are never shown. A short OAuth error code appears at the
+end of the message as `(Google error: …)`. Include that code when you ask for
+help.
+
+| Message starts with | Likely cause | What to do |
+| --- | --- | --- |
+| Google authorization expired or was revoked | The refresh token expired, was revoked, or Google access was removed. | Disconnect Google Calendar, then connect again. |
+| Google rejected the OAuth client credentials | The client ID or secret does not match the Google OAuth client. | Check the client ID and secret in **Account connections**. |
+| Google rejected the stored authorization request | Google rejected the saved connection. | Reconnect. If it repeats, check the redirect URI and OAuth client in Google Cloud. |
+| Google rejected the sign-in request | Google rejected the new connection request. | Check the redirect URI and OAuth client in Google Cloud, then connect again. |
+| Google authorization is temporarily unavailable | Google returned a server error or a rate limit. | Wait, then use **Test connection**. |
+| Google authorization could not be completed | Google returned a code that Family Hub does not show by name. | Reconnect. If it repeats, check the OAuth client settings in Google Cloud. |
+
+Never share the client secret or a refresh token when you ask for help.
 
 ## Use a private iCal feed instead
 

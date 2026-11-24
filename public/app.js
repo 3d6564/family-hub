@@ -73,19 +73,40 @@ function fillMembers(){
   settingsForms.watch(settingsRoot());
 }
 async function reloadMembers(savedId){await loadSettings(['members']);const form=savedId&&$(`[data-member-edit="${savedId}"]`);if(form)settingsForms.mark(form,'Saved.')}
+const taskOverrides=new Map(),renderedMarkup=new WeakMap();
+/** Write markup only when it changed, so unchanged widgets keep their controls, focus, and open groups. */
+function paintMarkup(el,html){if(!el||renderedMarkup.get(el)===html)return;el.innerHTML=html;renderedMarkup.set(el,html)}
+function taskKey(kind,item){return kind==='routine'?`routine:${item.id}:${item.child_id}`:`chore:${item.id}`}
+/** Checked state for a routine or chore. A save still in flight keeps the state the user chose. */
+function taskDone(kind,item){const key=taskKey(kind,item);return taskOverrides.has(key)?taskOverrides.get(key):!!item.completed}
+/** Set checkbox state from task data without replacing the checkbox. Boxes with a save in flight are skipped. */
+function syncTaskChecks(){
+  for(const input of $$('#routines [data-routine]')){if(input.dataset.pending)continue;const routine=dashboard.routines.find(r=>String(r.id)===input.dataset.routine&&String(r.child_id)===input.dataset.child);if(routine)input.checked=taskDone('routine',routine)}
+  for(const input of $$('#chores [data-chore]')){if(input.dataset.pending)continue;const chore=dashboard.chores.find(c=>String(c.id)===input.dataset.chore);if(chore)input.checked=taskDone('chore',chore)}
+}
 function renderTasks(){
-  const routines=dashboard.routines, chores=dashboard.chores;$('#routine-count').textContent=`${routines.filter(r=>r.completed).length} / ${routines.length}`;$('#chore-count').textContent=`${chores.filter(c=>c.completed).length} / ${chores.length}`;
+  const routines=dashboard.routines.map(r=>({...r,completed:taskDone('routine',r)})),chores=dashboard.chores.map(c=>({...c,completed:taskDone('chore',c)}));
+  $('#routine-count').textContent=`${routines.filter(r=>r.completed).length} / ${routines.length}`;$('#chore-count').textContent=`${chores.filter(c=>c.completed).length} / ${chores.length}`;
   const periodLabels={morning:'Morning',after_school:'Afternoon',bedtime:'Bedtime'},currentPeriod=routinePeriod();shownRoutinePeriod=currentPeriod;
   const groups=routinePeriodGroups(routines,currentPeriod,earlierRoutinePeriods());
-  $('#routines').innerHTML=groups.length?groups.map(({period,items,open})=>`<details class="routine-period" ${open?'open':''}><summary><span>${periodLabels[period]}</span><small class="muted">${items.length}</small></summary>${items.length?items.map(r=>`<div class="check-row"><label><input type="checkbox" data-routine="${r.id}" data-child="${r.child_id}" ${r.completed?'checked':''}><span>${escape(r.title)} <small class="muted">${escape(r.child_name)}</small></span></label></div>`).join(''):empty('No routines in this period.')}</details>`).join(''):empty('No routines are due today.');
-  $('#chores').innerHTML=chores.length?chores.map(c=>`<div class="check-row"><label><input type="checkbox" data-chore="${c.id}" data-reward="${Number(c.reward_quarters)||0}" data-title="${escapeAttribute(c.title)}" ${c.assignee_id?`data-assignee="${c.assignee_id}"`:''} ${c.assignee_id===null?'data-unassigned="1"':''} ${c.completed?'checked':''}><span>${escape(c.title)} ${(c.assignee_name||c.earner_name)?`<small class="muted">${escape(c.assignee_name||c.earner_name)}</small>`:''}${rewardLabel(c)}</span></label></div>`).join(''):empty('No chores are due.');
+  paintMarkup($('#routines'),groups.length?groups.map(({period,items,open})=>`<details class="routine-period" ${open?'open':''}><summary><span>${periodLabels[period]}</span><small class="muted">${items.length}</small></summary>${items.length?items.map(r=>`<div class="check-row"><label><input type="checkbox" data-routine="${r.id}" data-child="${r.child_id}"><span>${escape(r.title)} <small class="muted">${escape(r.child_name)}</small></span></label></div>`).join(''):empty('No routines in this period.')}</details>`).join(''):empty('No routines are due today.'));
+  paintMarkup($('#chores'),chores.length?chores.map(c=>`<div class="check-row"><label><input type="checkbox" data-chore="${c.id}" data-reward="${Number(c.reward_quarters)||0}" data-title="${escapeAttribute(c.title)}" ${c.assignee_id?`data-assignee="${c.assignee_id}"`:''} ${c.assignee_id===null?'data-unassigned="1"':''}><span>${escape(c.title)} ${(c.assignee_name||c.earner_name)?`<small class="muted">${escape(c.assignee_name||c.earner_name)}</small>`:''}${rewardLabel(c)}</span></label></div>`).join(''):empty('No chores are due.'));
+  syncTaskChecks();
+}
+/** Apply a confirmed change to the loaded task data. A one-time chore leaves the list, as it does on the server. */
+function commitTask(kind,input,completed,userId){
+  if(kind==='routine'){const row=dashboard.routines.find(r=>String(r.id)===input.dataset.routine&&String(r.child_id)===input.dataset.child);if(row)row.completed=completed;return}
+  const chore=dashboard.chores.find(c=>String(c.id)===input.dataset.chore);if(!chore)return;
+  if(chore.recurrence==='once'&&completed){dashboard.chores=dashboard.chores.filter(c=>c!==chore);return}
+  chore.completed=completed;
+  if(userId)chore.earner_name=members.find(m=>m.id===userId)?.name||chore.earner_name;
 }
 function rewardLabel(chore){const quarters=Number(chore.reward_quarters)||0;return quarters>0?` <small class="reward-value">$${(quarters/4).toFixed(2)}</small>`:''}
 function routineStarts(){return {morning:me?.household?.routineMorningStart||'00:00',after_school:me?.household?.routineAfternoonStart||'15:00',bedtime:me?.household?.routineBedtimeStart||'19:00'}}
 function householdClock(date=new Date()){const parts=new Intl.DateTimeFormat('en-GB',{timeZone:me?.household?.timezone||'UTC',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(date),hour=parts.find(part=>part.type==='hour').value;return `${hour==='24'?'00':hour}:${parts.find(part=>part.type==='minute').value}`}
 function routinePeriod(date=new Date()){const starts=routineStarts(),now=householdClock(date);return now>=starts.bedtime?'bedtime':now>=starts.after_school?'after_school':now>=starts.morning?'morning':'bedtime'}
 function earlierRoutinePeriods(date=new Date()){const starts=routineStarts(),now=householdClock(date);return now<starts.after_school?[]:now>=starts.bedtime?['morning','after_school']:['morning']}
-function renderPlans(){$('#plans').innerHTML=dashboard.plans.length?dashboard.plans.map(p=>me.user?.role==='adult'?`<div class="plan-edit"><input aria-label="Plan name" value="${escape(p.name)}"><input aria-label="Plan target" value="${escape(p.target)}"><button data-remove-plan aria-label="Remove ${escape(p.name)}">×</button></div>`:`<div class="plan"><span>${escape(p.name)}</span><strong>${escape(p.target)}</strong></div>`).join(''):empty('No family targets yet.')}
+function renderPlans(){paintMarkup($('#plans'),dashboard.plans.length?dashboard.plans.map(p=>me.user?.role==='adult'?`<div class="plan-edit"><input aria-label="Plan name" value="${escape(p.name)}"><input aria-label="Plan target" value="${escape(p.target)}"><button data-remove-plan aria-label="Remove ${escape(p.name)}">×</button></div>`:`<div class="plan"><span>${escape(p.name)}</span><strong>${escape(p.target)}</strong></div>`).join(''):empty('No family targets yet.'))}
 const weatherCloud='<g fill="#8ea4b8"><circle cx="13" cy="14" r="5"/><circle cx="19" cy="15" r="4.2"/><rect x="9" y="14" width="14" height="6" rx="3"/></g>';
 const weatherIcons={
   clear:'<g fill="#e0a106" stroke="#e0a106" stroke-width="2" stroke-linecap="round"><circle cx="16" cy="16" r="5.5" stroke="none"/><path d="M16 4v3.2M16 24.8V28M4 16h3.2M24.8 16H28M7.2 7.2l2.2 2.2M22.6 22.6l2.2 2.2M24.8 7.2l-2.2 2.2M9.4 22.6l-2.2 2.2"/></g>',
@@ -98,7 +119,7 @@ const weatherIcons={
 function weatherIcon(condition){return `<svg class="weather-icon" viewBox="0 0 32 32" aria-hidden="true">${weatherIcons[condition]||weatherIcons.unknown}</svg>`}
 function stashWeatherKey(){const form=$('#weather-form');if(form?.dataset.activeProvider){const value=form.elements.weatherApiKey.value;if(value)weatherKeys[form.dataset.activeProvider]=value;else delete weatherKeys[form.dataset.activeProvider]}}
 function showWeatherProvider(provider){const form=$('#weather-form');if(!form)return;stashWeatherKey();form.dataset.activeProvider=provider;form.elements.weatherProvider.value=provider;form.elements.weatherApiKey.value=weatherKeys[provider]||'';form.elements.weatherApiKey.placeholder=weatherHasKeys[provider]?'Saved key · leave blank to keep':'Enter API key';form.elements.weatherApiKey.type='password';form.elements.revealWeatherKey.checked=false;const notes={openweathermap:'OpenWeatherMap needs an API key. Up to 5 forecast days.', 'open-meteo':'Open-Meteo works without an API key. Up to 7 forecast days.', weatherapi:'WeatherAPI.com needs an API key. Forecast days depend on your plan.', pirateweather:'Pirate Weather needs an API key. Up to 7 forecast days.'};const note=$('#weather-provider-note');if(note)note.textContent=`${notes[provider]||''} ${weatherHasKeys[provider]?'A key is saved.':'No key is saved.'} Saved keys are not sent to this browser. Enter a replacement only when changing it.`}
-function renderWeather(){const card=$('#weather-card'),weather=dashboard?.weather,show=document.body.dataset.view==='calendar'&&weather?.days?.length;if(!card)return;card.hidden=!show;if(!show)return;const flags=weather.show||{},now=weather.current,nowEl=$('#weather-now');$('#weather-place').textContent=weather.place||'';const nowParts=[];if(flags.current&&now)nowParts.push(`<strong>${now.temperature??'–'}°</strong>`);if(flags.feels&&now&&Number.isFinite(now.feelsLike))nowParts.push(`<small>Feels ${now.feelsLike}°</small>`);if(nowEl){nowEl.hidden=!nowParts.length;nowEl.innerHTML=nowParts.join('')}$('#weather-days').style.gridTemplateColumns=`repeat(${weather.days.length},minmax(0,1fr))`;$('#weather-days').innerHTML=weather.days.map(day=>{const extra=[];if(flags.precip)extra.push(`<small class="weather-extra">Rain ${day.precip??'–'}%</small>`);if(flags.wind)extra.push(`<small class="weather-extra">${day.wind??'–'} ${escape(weather.windUnit||'mph')}</small>`);if(flags.humidity)extra.push(`<small class="weather-extra">Hum ${day.humidity??'–'}%</small>`);return `<div class="weather-day"><span>${escape(day.label)}</span>${weatherIcon(day.condition)}<strong>${day.high??'–'}°</strong><small>${day.low??'–'}°</small>${extra.join('')}</div>`}).join('')}
+function renderWeather(){const card=$('#weather-card'),weather=dashboard?.weather,show=document.body.dataset.view==='calendar'&&weather?.days?.length;if(!card)return;card.hidden=!show;if(!show)return;const flags=weather.show||{},now=weather.current,nowEl=$('#weather-now');$('#weather-place').textContent=weather.place||'';const nowParts=[];if(flags.current&&now)nowParts.push(`<strong>${now.temperature??'–'}°</strong>`);if(flags.feels&&now&&Number.isFinite(now.feelsLike))nowParts.push(`<small>Feels ${now.feelsLike}°</small>`);if(nowEl){nowEl.hidden=!nowParts.length;paintMarkup(nowEl,nowParts.join(''))}$('#weather-days').style.gridTemplateColumns=`repeat(${weather.days.length},minmax(0,1fr))`;paintMarkup($('#weather-days'),weather.days.map(day=>{const extra=[];if(flags.precip)extra.push(`<small class="weather-extra">Rain ${day.precip??'–'}%</small>`);if(flags.wind)extra.push(`<small class="weather-extra">${day.wind??'–'} ${escape(weather.windUnit||'mph')}</small>`);if(flags.humidity)extra.push(`<small class="weather-extra">Hum ${day.humidity??'–'}%</small>`);return `<div class="weather-day"><span>${escape(day.label)}</span>${weatherIcon(day.condition)}<strong>${day.high??'–'}°</strong><small>${day.low??'–'}°</small>${extra.join('')}</div>`}).join(''))}
 
 function monthRange(){const start=new Date(cursor.getFullYear(),cursor.getMonth(),1),end=new Date(cursor.getFullYear(),cursor.getMonth()+1,1);return{start,end}}
 async function renderCalendar(){
@@ -381,30 +402,37 @@ let stream;async function refreshCalendar(){me=await api('/api/me');await render
 $('#login-form').onsubmit=async e=>{e.preventDefault();try{await api('/api/login',{method:'POST',body:JSON.stringify(formJson(e.target))});$('#auth-error').textContent='';await load()}catch(error){$('#auth-error').textContent=error.message}};
 document.addEventListener('change',async e=>{
   const input=e.target;if(!input.dataset.routine&&!input.dataset.chore)return;
-  const root=input.closest('.view');let saved=false;input.disabled=true;
-  actionFeedback(root,'Saving…');
+  if(input.dataset.pending){input.checked=!input.checked;return}
+  const routine=!!input.dataset.routine,kind=routine?'routine':'chore',wanted=input.checked,root=input.closest('.view');
+  const key=routine?`routine:${input.dataset.routine}:${input.dataset.child}`:`chore:${input.dataset.chore}`;
+  let body={};
   try{
-    if(input.dataset.routine)await api(`/api/routines/${input.dataset.routine}/toggle`,{method:'POST',body:JSON.stringify({childId:+input.dataset.child})});
-    else{
-      const body={};
-      if(input.checked&&input.dataset.unassigned&&Number(input.dataset.reward)>0){
-        const userId=await chooseChoreRewardChild(input);
-        if(!userId){input.checked=false;actionFeedback(root,'');return}
-        body.userId=userId;
-      }
-      await api(`/api/chores/${input.dataset.chore}/toggle`,{method:'POST',body:JSON.stringify(body)});
+    if(!routine&&wanted&&input.dataset.unassigned&&Number(input.dataset.reward)>0){
+      const userId=await chooseChoreRewardChild(input);
+      if(!userId){input.checked=false;return}
+      body={userId};
     }
-    saved=true;await refresh();if(me.user?.role==='adult')await loadSettings(['tasks']);
+    // Keep the box in place. A save in flight sets aria-busy only: no disabled state and no status row.
+    input.dataset.pending='1';input.setAttribute('aria-busy','true');taskOverrides.set(key,wanted);
+    const result=routine
+      ?await api(`/api/routines/${input.dataset.routine}/toggle`,{method:'POST',body:JSON.stringify({childId:+input.dataset.child})})
+      :await api(`/api/chores/${input.dataset.chore}/toggle`,{method:'POST',body:JSON.stringify(body)});
+    commitTask(kind,input,typeof result?.completed==='boolean'?result.completed:wanted,body.userId);
     actionFeedback(root,'');
+    if(me.user?.role==='adult')loadSettings(['tasks']).catch(()=>{});
   }catch(error){
-    if(!saved)input.checked=!input.checked;
-    actionFeedback(root,saved?'Saved. The display could not refresh. Reload when the connection returns.':`${error.message} Your change was not saved. Try again.`,true);
-  }finally{input.disabled=false}
+    input.checked=!wanted;
+    actionFeedback(root,`${error.message} Your change was not saved. Try again.`,true);
+  }finally{
+    taskOverrides.delete(key);delete input.dataset.pending;input.removeAttribute('aria-busy');
+    renderTasks();
+  }
 });
 /** Keep action failures beside the affected view until a retry or navigation. */
 function actionFeedback(root,message,error=false){
+  if(!root)return;
   let status=$(':scope > .view-action-status',root);
-  if(!status){status=document.createElement('p');status.className='view-action-status';root.querySelector('.card-title')?.after(status)}
+  if(!status){if(!message)return;status=document.createElement('p');status.className='view-action-status';root.querySelector('.card-title')?.after(status)}
   status.textContent=message;status.classList.toggle('error',error);status.setAttribute('role',error?'alert':'status');
 }
 async function settingsAction(button, work) {
@@ -550,7 +578,7 @@ async function chooseChoreRewardChild(input){
 function renderLedger(){const ledger=tokenState.ledger,entries=$('#token-ledger-entries'),summary=$('#token-ledger-summary'),adjust=$('#token-adjustment');if(!ledger||!entries)return;if(summary)summary.innerHTML=`<div><span>Total earned</span><strong>${escape(ledger.person.total)}</strong></div><div><span>Available</span><strong>${escape(ledger.person.available)}</strong></div>`;if(adjust)adjust.hidden=me.user?.role!=='adult';const lines=ledger.lines||[];entries.innerHTML=lines.length?lines.map(item=>`<tr class="${item.reversed?'is-reversed':''}"><td>${escape(item.date)}</td><td>${escape(item.description)}${item.reversed?' <small class="muted">Reversed</small>':''}${item.reason?`<small class="ledger-reason">${escape(item.reason)}</small>`:''}</td><td class="money ${item.kind}">${escape(item.amount)}</td><td class="money">${escape(item.available)}</td><td class="money">${escape(item.total)}</td><td>${item.canReverse?`<button type="button" class="ledger-reverse" data-token-reverse="${item.id}" data-token-type="${escapeAttribute(item.type)}">Reverse</button>`:''}</td></tr>`).join(''):'<tr><td colspan="6">No ledger lines yet.</td></tr>'}
 function renderTokenScreen(){const person=tokenState.people.find(item=>item.id===tokenState.userId),people=$('#token-people'),session=$('#token-session'),ledger=$('#token-ledger-panel'),back=$('#token-back'),ledgerButton=$('#token-ledger'),heading=$('#token-heading');if(!people||!session)return;if(!person){tokenState.screen='list';session.hidden=true;if(ledger)ledger.hidden=true;people.hidden=false;if(back)back.hidden=true;if(ledgerButton)ledgerButton.hidden=true;if(heading)heading.textContent='Withdraw tokens';people.innerHTML=tokenState.people.length?tokenState.people.map(item=>`<button type="button" class="token-person" data-token-person="${item.id}"><span><strong>${escape(item.name)}</strong><small>Total ${escape(item.total)}</small></span><b>${escape(item.available)}</b></button>`).join(''):empty('No children yet.');return}people.hidden=true;if(back)back.hidden=false;if(ledgerButton)ledgerButton.hidden=tokenState.screen==='ledger';if(heading)heading.textContent=tokenState.screen==='ledger'?`${person.name} ledger`:person.name;if(tokenState.screen==='ledger'){session.hidden=true;if(ledger)ledger.hidden=false;renderLedger();return}if(ledger)ledger.hidden=true;session.hidden=false;$('#token-total').textContent=person.total;$('#token-available').textContent=person.available;for(const token of ['copper','silver','gold'])$(`[data-count="${token}"]`).textContent=tokenState.counts[token];const quarters=selectedQuarters(),message=$('#token-message'),dispense=$('#token-dispense');$('#token-selection').textContent=quarters?`Selected ${tokenMoney(quarters)}`:'Tap a token to add it.';dispense.disabled=!quarters||quarters>person.availableQuarters;dispense.textContent=quarters?`Dispense ${tokenMoney(quarters)}`:'Dispense';if(quarters>person.availableQuarters)message.textContent='That is more than the available amount.';else if(!message.dataset.sticky)message.textContent=''}
 async function renderTokens(){if(document.body.dataset.view!=='tokens')return;try{tokenState.people=(await api('/api/tokens')).people;if(tokenState.userId&&!tokenState.people.some(item=>item.id===tokenState.userId))tokenState.userId=null;renderTokenScreen()}catch(error){toast(error.message)}}
-async function renderTokenBoard(){const board=$('#token-board');if(!board)return;if(document.body.dataset.view!=='calendar'||!me?.household?.tokenBoardEnabled){board.hidden=true;return}try{const people=(await api('/api/tokens')).people;board.hidden=!people.length;$('#token-board-list').innerHTML=people.map(person=>`<div class="token-board-row"><span>${escape(person.name)}</span><strong>${escape(person.total)}</strong></div>`).join('')}catch{board.hidden=true}}
+async function renderTokenBoard(){const board=$('#token-board');if(!board)return;if(document.body.dataset.view!=='calendar'||!me?.household?.tokenBoardEnabled){board.hidden=true;return}try{const people=(await api('/api/tokens')).people;board.hidden=!people.length;paintMarkup($('#token-board-list'),people.map(person=>`<div class="token-board-row"><span>${escape(person.name)}</span><strong>${escape(person.total)}</strong></div>`).join(''))}catch{board.hidden=true}}
 document.addEventListener('click',e=>{const personButton=e.target.closest('[data-token-person]');if(personButton){tokenState.userId=+personButton.dataset.tokenPerson;tokenState.screen='session';tokenState.counts={copper:0,silver:0,gold:0};tokenState.requestId='';$('#token-message').textContent='';renderTokenScreen();return}const less=e.target.closest('[data-token-less]');if(less){const name=less.dataset.tokenLess;tokenState.counts[name]=Math.max(0,tokenState.counts[name]-1);$('#token-message').textContent='';renderTokenScreen();return}const coin=e.target.closest('[data-token]');if(!coin||document.body.dataset.view!=='tokens')return;tokenState.counts[coin.dataset.token]+=1;$('#token-message').textContent='';renderTokenScreen()});
 $('#token-board').onclick=()=>openView('tokens');$('#token-clear').onclick=()=>{tokenState.counts={copper:0,silver:0,gold:0};$('#token-message').textContent='';renderTokenScreen()};$('#token-back').onclick=()=>{if(tokenState.screen==='ledger'){tokenState.screen='session';renderTokenScreen();return}tokenState.userId=null;tokenState.screen='list';tokenState.counts={copper:0,silver:0,gold:0};tokenState.requestId='';$('#token-message').textContent='';renderTokenScreen()};async function openTokenLedger(){tokenState.ledger=await api(`/api/tokens/ledger?userId=${tokenState.userId}`);tokenState.screen='ledger';renderTokenScreen()}
 $('#token-ledger').onclick=async()=>{if(!tokenState.userId)return;try{await openTokenLedger()}catch(error){toast(error.message)}};

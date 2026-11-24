@@ -23,14 +23,16 @@ test('Google refresh failures give safe recovery instructions without provider d
   };
   const connector = createGoogleCalendarConnector(db, options);
   const authorization = new URL(connector.begin(home, { kind: 'user', role: 'adult', id: session.id, user_id: userId }).authorizationUrl);
-  assert.equal(await connector.complete({ state: authorization.searchParams.get('state'), code: 'test-code' }), 'success');
+  assert.equal((await connector.complete({ state: authorization.searchParams.get('state'), code: 'test-code' })).status, 'success');
   for (const [error, status, expected] of [
     ['invalid_grant', 400, /expired or was revoked.*seven days/],
     ['invalid_client', 401, /rejected the OAuth client credentials/],
     ['unauthorized_client', 400, /rejected the OAuth client credentials/],
     ['invalid_grant', 503, /temporarily unavailable/],
     ['rate_limit', 429, /temporarily unavailable/],
-    ['unknown-private-value', 400, /Check the Google connection settings/],
+    ['invalid_request', 400, /rejected the stored authorization request.*Reconnect Google Calendar/],
+    ['unrecognized_code', 400, /could not be completed.*\(Google error: unrecognized_code\)/],
+    ['unknown-private-value', 400, /could not be completed.*Reconnect Google Calendar/],
   ]) {
     // A fresh connector reproduces a refresh after restart without an access-token cache.
     const restarted = createGoogleCalendarConnector(db, {
@@ -41,6 +43,72 @@ test('Google refresh failures give safe recovery instructions without provider d
       assert.doesNotMatch(failure.message, /test-secret|test-refresh|sensitive-provider-description|unknown-private-value/);
       return failure.status === 502;
     });
+  }
+});
+
+test('Google event reads keep the refresh failure reason after a cached access token expires (issue #49)', async (t) => {
+  originEnvironment(t);
+  const db = openDatabase(':memory:');
+  t.after(() => db.close());
+  const home = Number(db.prepare('INSERT INTO households(name,timezone) VALUES (?,?)').run('Test home', 'UTC').lastInsertRowid);
+  const userId = addUser(db, home, 'adult', 'ReadAdult');
+  const session = db.prepare('SELECT id FROM sessions WHERE token_hash=?').get(digest(createSession(db, { householdId: home, userId })));
+  let now = Date.now(), refreshReply = () => json({ access_token: 'test-access', expires_in: 3600 });
+  t.mock.method(Date, 'now', () => now);
+  const connector = createGoogleCalendarConnector(db, {
+    key: encryptionKey, clientId: 'test-client', clientSecret: 'test-secret', siteUrl: 'http://localhost:3000',
+    fetch: async (url, init) => {
+      const target = new URL(url);
+      if (target.href === 'https://oauth2.googleapis.com/token') {
+        return new URLSearchParams(init.body).get('grant_type') === 'authorization_code'
+          ? json({ access_token: 'test-access', refresh_token: 'test-refresh', expires_in: 3600 })
+          : refreshReply();
+      }
+      if (target.pathname.endsWith('/users/me/calendarList')) return json({ items: [{ id: 'family', summary: 'Family', backgroundColor: '#336699' }] });
+      if (target.pathname.endsWith('/calendars/family/events')) return json({ items: [] });
+      throw new Error(`Unexpected Google request ${target.href}`);
+    },
+  });
+  const authorization = new URL(connector.begin(home, { kind: 'user', role: 'adult', id: session.id, user_id: userId }).authorizationUrl);
+  assert.equal((await connector.complete({ state: authorization.searchParams.get('state'), code: 'test-code' })).status, 'success');
+  connector.configure(home, ['family'], true);
+  const from = new Date(now - 3_600_000), to = new Date(now + 3_600_000);
+  assert.deepEqual(await connector.readEvents(home, from, to), { events: [], errors: [] });
+
+  // The access token from the connection expires after an hour, so the next read uses the stored refresh token.
+  now += 2 * 3_600_000;
+  refreshReply = () => json({ error: 'invalid_grant', error_description: 'sensitive-provider-description' }, 400);
+  const failed = await connector.readEvents(home, from, to);
+  assert.equal(failed.errors.length, 1);
+  assert.match(failed.errors[0].message, /expired or was revoked/);
+  assert.match(connector.settings(home).error, /Some Google calendars could not load\. .*expired or was revoked/);
+  assert.doesNotMatch(JSON.stringify({ failed, settings: connector.settings(home) }), /test-refresh|test-secret|sensitive-provider-description/);
+});
+
+test('Google connect failures give a specific reason without provider details (issue #49)', async (t) => {
+  originEnvironment(t);
+  const db = openDatabase(':memory:');
+  t.after(() => db.close());
+  const home = Number(db.prepare('INSERT INTO households(name,timezone) VALUES (?,?)').run('Test home', 'UTC').lastInsertRowid);
+  const userId = addUser(db, home, 'adult', 'ConnectAdult');
+  const session = db.prepare('SELECT id FROM sessions WHERE token_hash=?').get(digest(createSession(db, { householdId: home, userId })));
+  for (const [error, status, expected] of [
+    ['invalid_grant', 400, /sign-in expired or was already used/],
+    ['invalid_client', 401, /rejected the OAuth client credentials/],
+    ['invalid_request', 400, /rejected the sign-in request.*redirect URI/],
+    ['unknown-private-value', 400, /could not be completed/],
+  ]) {
+    const connector = createGoogleCalendarConnector(db, {
+      key: encryptionKey, clientId: 'test-client', clientSecret: 'test-secret', siteUrl: 'http://localhost:3000',
+      fetch: async () => json({ error, error_description: 'sensitive-provider-description' }, status),
+    });
+    const authorization = new URL(connector.begin(home, { kind: 'user', role: 'adult', id: session.id, user_id: userId }).authorizationUrl);
+    const result = await connector.complete({ state: authorization.searchParams.get('state'), code: 'test-code' });
+    assert.equal(result.status, 'failed');
+    assert.match(result.message, expected);
+    const page = connector.callbackPage(result).html;
+    assert.match(page, /family-hub-google-calendar-oauth/);
+    assert.doesNotMatch(`${page}${JSON.stringify(result)}`, /unknown-private-value|sensitive-provider-description|test-secret|test-refresh/);
   }
 });
 
