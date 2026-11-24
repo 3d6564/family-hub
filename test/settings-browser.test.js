@@ -18,7 +18,7 @@ async function until(check) {
 
 test('settings retain drafts, isolate failures, and work at phone and desktop widths', { skip: !browserPath, timeout: 90000 }, async (t) => {
   const publicRoot = new URL('../public/', import.meta.url);
-  const household = { name: 'Sample home', timezone: 'UTC', weekStartsOn: 0, theme: 'green', dimEnabled: false, tokenBoardEnabled: false };
+  const household = { name: 'Sample home', timezone: 'UTC', weekStartsOn: 0, theme: 'green', dimEnabled: false, tokenBoardEnabled: false, routineBedtimeStart: '00:00' };
   let failWeatherLoad = true, failWeatherSave = false, weatherSaveCount = 0, tokenSaves = 0, screenDeletes = 0, restores = 0, holdSave;
   let failScreenPair = false;
   let failActivitySave = false, holdActivitySave, failTaskToggle = false, failDashboardLoad = false;
@@ -27,6 +27,9 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   let googleConnects = 0, googleSaves = 0, googleCredentialSaves = 0, googleOAuthSecret = '';
   const pairingRequests = [];
   let displayMode = false, failListSave = false, listStale = false;
+  let routineDone = false, choreDone = false, dashboardReads = 0, routineToggles = 0, choreToggles = 0, holdTaskToggle = null;
+  const eventStreams = new Set();
+  const emitEvent = name => { for (const stream of eventStreams) stream.write(`event: ${name}\ndata: {}\n\n`); };
   let anylist = { keyReady: true, connected: false, enabled: false, listId: '', listIds: [], lists: [], state: 'unconfigured', lastSuccessAt: null };
   let listItems = [{ id: 'milk', name: 'Milk', notes: '', quantity: '2', quantityUnit: 'L', checked: false }, { id: 'bread', name: 'Bread', notes: '', quantity: '', checked: true }];
   const resources = [{ id: 'groceries', name: 'Sample groceries' }, { id: 'household', name: 'Sample household' }, { id: 'pharmacy', name: 'Pharmacy' }, { id: 'tools', name: 'Tools' }];
@@ -43,7 +46,7 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
   let screens = [{ id: 3, device_name: 'Sample screen', last_seen_at: '2026-10-25 12:00:00', screen_width: 1280, screen_height: 720, viewport_width: 1280, viewport_height: 720, pixel_ratio: 1 }];
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost'), route = url.pathname;
-    if (route === '/api/events/stream') { res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.write('event: ready\ndata: {}\n\n'); return; }
+    if (route === '/api/events/stream') { eventStreams.add(res); req.on('close', () => eventStreams.delete(res)); res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.write('event: ready\ndata: {}\n\n'); return; }
     const json = (body, code = 200) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
     let body = {};
     if (['POST', 'PUT', 'PATCH'].includes(req.method)) { let text = ''; for await (const chunk of req) text += chunk; body = JSON.parse(text || '{}'); }
@@ -51,12 +54,14 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     if (route === '/api/me') return json({ user: displayMode ? null : { id: 1, name: 'Sample adult', role: 'adult' }, device: displayMode ? 'Sample wall' : null, household });
     if (route === '/api/version') return json({ version: 'sample-deployment' });
     if (route === '/api/release') return json({ version: '0.3.3', channel: 'release' });
-    if (route === '/api/dashboard') return failDashboardLoad ? json({ error: 'Sample dashboard unavailable.' }, 503) : json({ today: '2026-10-25', routines: [{ id: 1, title: 'Read together', child_id: 2, child_name: 'Sample child', period: 'morning', completed: false }], chores: [{ id: 1, title: 'Set the table', assignee_name: 'Sample child', reward_quarters: 2, completed: false }], plans: [], weather: null });
+    if (route === '/api/dashboard') dashboardReads += 1;
+    if (route === '/api/dashboard') return failDashboardLoad ? json({ error: 'Sample dashboard unavailable.' }, 503) : json({ today: '2026-10-25', routines: [{ id: 1, title: 'Read together', child_id: 2, child_name: 'Sample child', period: 'bedtime', completed: routineDone }], chores: [{ id: 1, title: 'Set the table', assignee_name: 'Sample child', reward_quarters: 2, completed: choreDone }], plans: [], weather: null });
     if (route === '/api/calendar/events') return json({ events: [], errors: [] });
     if (route === '/api/tokens') return json({ people: [] });
     if (route === '/api/routines' && req.method === 'GET') return json([{ id: 1, title: 'Read together', child_ids: [2], child_names: 'Sample child', days: '0,1,2,3,4,5,6', period: 'morning' }]);
     if (route === '/api/chores' && req.method === 'GET') return json([{ id: 1, title: 'Set the table', assignee_id: 2, assignee_name: 'Sample child', recurrence: 'scheduled', days: '1,2,3,4,5', reward_quarters: 2 }]);
-    if (/^\/api\/(routines|chores)\/\d+\/toggle$/.test(route)) return failTaskToggle ? json({ error: 'Sample completion failure.' }, 502) : json({ ok: true });
+    if (/^\/api\/routines\/\d+\/toggle$/.test(route)) { routineToggles += 1; if (holdTaskToggle) await holdTaskToggle; if (failTaskToggle) return json({ error: 'Sample completion failure.' }, 502); routineDone = !routineDone; emitEvent('tasks'); return json({ completed: routineDone }); }
+    if (/^\/api\/chores\/\d+\/toggle$/.test(route)) { choreToggles += 1; if (holdTaskToggle) await holdTaskToggle; if (failTaskToggle) return json({ error: 'Sample completion failure.' }, 502); choreDone = !choreDone; emitEvent('tasks'); return json({ completed: choreDone }); }
     if ((['/api/chores', '/api/routines', '/api/reminders'].includes(route) && req.method === 'POST') || (/^\/api\/(chores|routines|reminders)\/\d+$/.test(route) && req.method === 'PATCH')) {
       activityRequests.push({ route, method: req.method, body });
       if (holdActivitySave) await holdActivitySave;
@@ -584,7 +589,7 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     assert.equal(await evaluate('document.querySelector("#chore-form [name=title]").value'), '');
 
     failTaskToggle = true; await click('[data-chore]');
-    await until(() => evaluate('document.querySelector("[data-view=chores] .view-action-status").textContent.includes("Sample completion failure")'));
+    await until(() => evaluate('!!document.querySelector("[data-view=chores] .view-action-status") && document.querySelector("[data-view=chores] .view-action-status").textContent.includes("Sample completion failure")'));
     assert.equal(await evaluate('document.querySelector("[data-chore]").checked'), false);
     failTaskToggle = false;
   });
@@ -698,6 +703,63 @@ test('settings retain drafts, isolate failures, and work at phone and desktop wi
     await until(() => evaluate('innerWidth === 390 && innerHeight === 844'));
     await screenshot('calendar-sidebar-phone-390');
     await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+  });
+
+  await t.test('calendar task rows draw no separator lines and keep the chores page lines', async () => {
+    await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await click('[data-nav="calendar"]');
+    await until(() => evaluate('!!document.querySelector("aside [data-routine]") && !!document.querySelector("aside [data-chore]")'));
+    await evaluate('document.querySelectorAll("aside .routine-period").forEach(group => { group.open = true; })');
+    const calendarLines = await evaluate('[...document.querySelectorAll("aside .check-row")].map(row => getComputedStyle(row).borderBottomWidth)');
+    assert.ok(calendarLines.length >= 2 && calendarLines.every(width => width === '0px'), `Calendar task rows must not draw separator lines: ${JSON.stringify(calendarLines)}`);
+    await click('[data-nav="chores"]');
+    await until(() => evaluate('document.body.dataset.view === "chores" && !!document.querySelector("[data-chore]")'));
+    assert.equal(await evaluate('getComputedStyle(document.querySelector("[data-chore]").closest(".check-row")).borderBottomWidth'), '1px', 'The chores page keeps its row separators');
+  });
+
+  await t.test('calendar task checkboxes save in place without status rows, disabled states, or widget rebuilds', async () => {
+    await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await click('[data-nav="calendar"]');
+    await until(() => evaluate('!!document.querySelector("aside [data-routine]") && !!document.querySelector("aside [data-chore]")'));
+    await evaluate('document.querySelectorAll("aside .routine-period").forEach(group => { group.open = true; }); window.__routineBox = document.querySelector("aside [data-routine]"); window.__choreBox = document.querySelector("aside [data-chore]")');
+    const layout = () => evaluate('({routineTop: window.__routineBox.getBoundingClientRect().top, choreTop: window.__choreBox.getBoundingClientRect().top, statusRows: document.querySelectorAll(".view-action-status:not(:empty)").length})');
+    const saveInPlace = async (selector, boxName, topKey, requests, expectedChecked) => {
+      const before = await layout(), readsBefore = dashboardReads, requestsBefore = requests();
+      let release = () => {};
+      holdTaskToggle = new Promise(resolve => { release = resolve; });
+      try {
+        await click(selector);
+        await until(() => requests() === requestsBefore + 1);
+        const saving = await evaluate(`(()=>{const box=document.querySelector(${JSON.stringify(selector)});return {sameNode:box===window.${boxName},disabled:box.disabled,busy:box.getAttribute("aria-busy"),checked:box.checked,statusRows:(box.closest(".view")?.querySelectorAll(":scope > .view-action-status:not(:empty)").length??0),moved:box.getBoundingClientRect().top!==${before[topKey]}}})()`);
+        assert.deepEqual(saving, { sameNode: true, disabled: false, busy: 'true', checked: expectedChecked, statusRows: 0, moved: false }, `${selector} must stay enabled, keep its node, and show no status while saving`);
+      } finally {
+        release(); holdTaskToggle = null;
+      }
+      await until(() => evaluate(`!window.${boxName}.hasAttribute("aria-busy")`));
+      await until(() => dashboardReads > readsBefore);
+      await new Promise(resolve => setTimeout(resolve, 150));
+      const saved = await evaluate(`(()=>{const box=document.querySelector(${JSON.stringify(selector)});return {sameNode:box===window.${boxName}&&window.${boxName}.isConnected,checked:box.checked,statusRows:(box.closest(".view")?.querySelectorAll(":scope > .view-action-status:not(:empty)").length??0)}})()`);
+      assert.deepEqual(saved, { sameNode: true, checked: expectedChecked, statusRows: 0 }, `${selector} must keep its checkbox after the server confirms the change`);
+      const after = await layout();
+      assert.deepEqual({ routineMoved: after.routineTop !== before.routineTop, choreMoved: after.choreTop !== before.choreTop }, { routineMoved: false, choreMoved: false }, `Saving ${selector} must not move calendar task rows`);
+    };
+    try {
+      // A successful save clears any earlier chores error, so the checks below start from a settled state.
+      const choreRequests = choreToggles;
+      await click('aside [data-chore]');
+      await until(() => choreToggles === choreRequests + 1);
+      await until(() => evaluate('!document.querySelector(".view-action-status:not(:empty)")'));
+      await saveInPlace('aside [data-routine]', '__routineBox', 'routineTop', () => routineToggles, true);
+      await saveInPlace('aside [data-routine]', '__routineBox', 'routineTop', () => routineToggles, false);
+      await saveInPlace('aside [data-chore]', '__choreBox', 'choreTop', () => choreToggles, false);
+      await saveInPlace('aside [data-chore]', '__choreBox', 'choreTop', () => choreToggles, true);
+      await saveInPlace('aside [data-chore]', '__choreBox', 'choreTop', () => choreToggles, false);
+    } finally {
+      routineDone = false; choreDone = false;
+      const reads = dashboardReads;
+      emitEvent('tasks');
+      await until(() => dashboardReads > reads).catch(() => {});
+    }
   });
 
   await t.test('paired-display Lists has add/check controls but no delete controls', async () => {

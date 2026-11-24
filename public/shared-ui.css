@@ -53,8 +53,8 @@ body[data-view="routines"] .view[data-view="routines"] { border-radius: 10px; bo
 .check-row small:not(.reward-value) { font-size: .85rem; }
 .check-row label > span { min-width: 0; overflow-wrap: anywhere; }
 .check-row input:checked + span { color: var(--muted); }
-/* Calendar sidebar rows drop the shared 12px padding. Wide layouts use the 28px calendar height; other sizes keep 44px touch rows. */
-body[data-view="calendar"] .check-row { padding: 1px 0; }
+/* Calendar sidebar rows have no separator lines and drop the shared 12px padding. Wide layouts use the 28px calendar height; other sizes keep 44px touch rows. */
+body[data-view="calendar"] .check-row { padding: 1px 0; border-bottom: 0; }
 body[data-view="calendar"] .routine-period summary { padding: 2px 4px; }
 @media (min-width: 1200px) and (min-height: 800px) {
   body[data-view="calendar"] .routine-period summary { min-height: 28px; }
